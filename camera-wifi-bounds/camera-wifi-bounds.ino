@@ -76,7 +76,7 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_RGB565;
+  config.pixel_format = PIXFORMAT_GRAYSCALE;
   
   // Start with lower resolution for less bandwidth usage and faster upload
   config.frame_size = FRAMESIZE_VGA;  // 640x480
@@ -96,7 +96,7 @@ void setup() {
   
   // Set higher quality after initialization if you want
   sensor_t * s = esp_camera_sensor_get();
-  if (s) {
+  if (false && s) {
     s->set_brightness(s, 0);      // -2 to 2
     s->set_contrast(s, 0);        // -2 to 2
     s->set_saturation(s, 0);      // -2 to 2
