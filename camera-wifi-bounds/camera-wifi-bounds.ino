@@ -48,7 +48,7 @@ void setup() {
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(5000);
     Serial.print(".");
   }
   Serial.println();
@@ -125,7 +125,7 @@ void setup() {
 
 void loop() {
   captureAndUploadImage();
-  delay(5000);
+  delay(500);
 }
 
 void captureAndUploadImage() {
