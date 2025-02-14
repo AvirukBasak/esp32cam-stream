@@ -41,7 +41,7 @@ def upload_image():
         
         # convert to jpeg
         try:
-            width, height = 640, 400  # Match ESP32 resolution
+            width, height = 640, 480  # Match ESP32 resolution
             rgb565_array = np.frombuffer(rgb565_data, dtype=np.uint16).reshape((height, width))
             r = ((rgb565_array & 0xF800) >> 8).astype(np.uint8)
             g = ((rgb565_array & 0x07E0) >> 3).astype(np.uint8)
