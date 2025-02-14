@@ -38,6 +38,8 @@ const char* password = "a r s h o l a";
 const char* serverUrl = "http://192.168.181.119:5000";
 
 void setup() {
+  setCpuFrequencyMhz(240);
+
   // Disable brownout detector
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   
@@ -51,6 +53,7 @@ void setup() {
     delay(5000);
     Serial.print(".");
   }
+  WiFi.setSleep(false);
   Serial.println();
   Serial.print("Connected to WiFi, IP address: ");
   Serial.println(WiFi.localIP());
@@ -96,7 +99,7 @@ void setup() {
   
   // Set higher quality after initialization if you want
   sensor_t * s = esp_camera_sensor_get();
-  if (false && s) {
+  if (s) {
     s->set_brightness(s, 0);      // -2 to 2
     s->set_contrast(s, 0);        // -2 to 2
     s->set_saturation(s, 0);      // -2 to 2
@@ -125,7 +128,7 @@ void setup() {
 
 void loop() {
   captureAndUploadImage();
-  delay(500);
+  delay(100);
 }
 
 void captureAndUploadImage() {
@@ -136,12 +139,12 @@ void captureAndUploadImage() {
     return;
   }
   
-  Serial.printf("Captured image: %dx%d, size: %d bytes\n", fb->width, fb->height, fb->len);
+  // Serial.printf("Captured image: %dx%d, size: %d bytes\n", fb->width, fb->height, fb->len);
   
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     
-    Serial.println("Starting HTTP POST request...");
+    // Serial.println("Starting HTTP POST request...");
     http.begin(serverUrl);
     http.addHeader("Content-Type", "application/octet-stream");
     
@@ -149,9 +152,9 @@ void captureAndUploadImage() {
     int httpResponseCode = http.POST(fb->buf, fb->len);
     
     if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.println(httpResponseCode);
-      Serial.println(response);
+      // String response = http.getString();
+      // Serial.println(httpResponseCode);
+      // Serial.println(response);
     } else {
       Serial.printf("Error on HTTP request: %s (%d)\n", http.errorToString(httpResponseCode).c_str(), httpResponseCode);
     }
