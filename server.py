@@ -11,18 +11,28 @@ clients = set()
 
 """
 struct ImageUploadFormats {
-  const char *RGB565 = "image/rgb565";
-  const char *RGB555 = "image/rgb555";
-  const char *RGB444 = "image/rgb444";
-  const char *GS = "image/grayscale";
+  static constexpr const char *RGB565 = "image/rgb565";
+  static constexpr const char *GS = "image/grayscale";
+  static constexpr const char *RGB444 = "image/rgb444";
+  static constexpr const char *RGB555 = "image/rgb555";
+  static constexpr const char *RGB888 = "image/rgb888";
+  static constexpr const char *JPEG = "image/jpeg";
+  static constexpr const char *YUV422 = "image/yuv422";
+  static constexpr const char *YUV420 = "image/yuv420";
+  static constexpr const char *RAW = "image/raw";
 };
 """
 
 ImageUploadFormats = {
     "image/rgb565": "img_565_to_jpeg",
-    "image/rgb555": "img_555_to_jpeg",
+    "image/grayscale": "img_gs_to_jpeg",
     "image/rgb444": "img_444_to_jpeg",
-    "image/grayscale": "img_gs_to_jpeg"
+    "image/rgb555": "img_555_to_jpeg",
+    "image/rgb888": "img_888_to_jpeg",
+    "image/jpeg": "img_jpeg_to_jpeg",
+    "image/yuv422": "img_yuv422_to_jpeg",
+    "image/yuv420": "img_yuv420_to_jpeg",
+    "image/raw": "img_raw_to_jpeg"
 }
 
 
