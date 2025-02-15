@@ -1,50 +1,29 @@
 from flask import Flask, request
 from flask_socketio import SocketIO, emit
 import base64
-import numpy as np
-from PIL import Image
-import io
 
+from img_conversions import img_565_to_jpeg, img_555_to_jpeg, img_444_to_jpeg, img_gs_to_jpeg
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 clients = set()
 
 
-def img_565_to_jpeg(image_raw, width, height):
-    """
-    Args:
-    - image_raw: Raw image data from ESP32
-    - width, height: Width and height of image as captured
-    Returns:
-    - buffer: A buffer. Use buffer.getvalue() to get binary JPEG image
-    """
-    array = np.frombuffer(image_raw, dtype=np.uint16).reshape((height, width))
-    array = np.fliplr(array)
-    r = ((array & 0xF800) >> 8).astype(np.uint8)
-    g = ((array & 0x07E0) >> 3).astype(np.uint8)
-    b = ((array & 0x001F) << 3).astype(np.uint8)
-    rgb_array = np.stack((r, g, b), axis=-1)
-    img = Image.fromarray(rgb_array, mode='RGB')
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG")
-    return buffer
+"""
+struct ImageUploadFormats {
+  const char *RGB565 = "image/rgb565";
+  const char *RGB555 = "image/rgb555";
+  const char *RGB444 = "image/rgb444";
+  const char *GS = "image/grayscale";
+};
+"""
 
-
-def img_gs_to_jpeg(image_raw, width, height):
-    """
-    Args:
-    - image_raw: Raw image data from ESP32
-    - width, height: Width and height of image as captured
-    Returns:
-    - buffer: A buffer. Use buffer.getvalue() to get binary JPEG image
-    """
-    array = np.frombuffer(image_raw, dtype=np.uint8).reshape((height, width))
-    array = np.fliplr(array)
-    img = Image.fromarray(array, mode='L')
-    buffer = io.BytesIO()
-    img.save(buffer, format="JPEG")
-    return buffer
+ImageUploadFormats = {
+    "image/rgb565": "img_565_to_jpeg",
+    "image/rgb555": "img_555_to_jpeg",
+    "image/rgb444": "img_444_to_jpeg",
+    "image/grayscale": "img_gs_to_jpeg"
+}
 
 
 @app.route('/')
@@ -75,22 +54,25 @@ def index():
 
 @app.route('/', methods=['POST'])
 def upload_image():
-    if request.content_type == 'application/octet-stream':
+    if request.content_type in ImageUploadFormats:
         image_raw = request.data
         width, height = 640, 480
 
         try:
-            jpeg_bytes = img_gs_to_jpeg(image_raw, width, height).getvalue()
+            # Dynamically call the appropriate conversion function
+            convert_function = globals()[ImageUploadFormats[request.content_type]]
+            jpeg_bytes = convert_function(image_raw, width, height).getvalue()
         except Exception as e:
             print('[E]', e)
             return "Internal Server Error", 555
 
-        # encode to base64 and send
+        # Encode to base64 and send
         encoded_image = base64.b64encode(jpeg_bytes).decode('utf-8')
 
         if clients:
             socketio.emit('image', encoded_image)
         return "Image received", 200
+
     return "Unsupported Media Type", 415
 
 
