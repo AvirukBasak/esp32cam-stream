@@ -9,17 +9,25 @@
 #include "soc/rtc_cntl_reg.h"
 
 #define CAMERA_MODEL_AI_THINKER
-#define CAMERA_PIXEL_FORMAT (PIXFORMAT_GRAYSCALE)
+#define CAMERA_PIXEL_FORMAT (PIXFORMAT_RGB565)
+#define CAPTURE_N_UPLOAD_DELAY_MS (1000)
 
 #define WIFI_SSID ("Begonia")
 #define WIFI_PASSWD ("a r s h o l a")
 
 #define SERVER_IP ("192.168.181.119")
 #define SERVER_UDP_PORT (8080)
-#define UDP_PAYLOAD_SIZE (1024)
+#define SERVER_UDP_PAYLOAD_SIZE (1024)
 #define SERVER_HTTP_URL ("http://192.168.181.119:5000")
 
-#define CAPTUREN_N_UPLOAD_DELAY_MS (10)
+struct ImageUploadFormats {
+  static constexpr const char *RGB565 = "image/rgb565";
+  static constexpr const char *RGB555 = "image/rgb555";
+  static constexpr const char *RGB444 = "image/rgb444";
+  static constexpr const char *GS = "image/grayscale";
+};
+
+const char *HTTP_ContentType = NULL;
 
 inline void init_first() {
   setCpuFrequencyMhz(240);
@@ -130,6 +138,43 @@ inline void config_camsensor() {
   }
 }
 
+inline void init_httpConfig() {
+  switch (CAMERA_PIXEL_FORMAT) {
+    case PIXFORMAT_RGB565:
+      HTTP_ContentType = ImageUploadFormats::RGB565;
+      break;
+    case PIXFORMAT_RGB555:
+      HTTP_ContentType = ImageUploadFormats::RGB555;
+      break;
+    case PIXFORMAT_RGB444:
+      HTTP_ContentType = ImageUploadFormats::RGB444;
+      break;
+    case PIXFORMAT_GRAYSCALE:
+      HTTP_ContentType = ImageUploadFormats::GS;
+      break;
+    case PIXFORMAT_YUV422:
+      Serial.println("[E] Unhandled PIXFORMAT_YUV422");
+      esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_YUV420:
+      Serial.println("[E] Unhandled PIXFORMAT_YUV420");
+      esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_JPEG:
+      Serial.println("[E] Unsupported PIXFORMAT_JPEG");
+      esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_RGB888:
+      Serial.println("[E] Unsupported PIXFORMAT_RGB888");
+      esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_RAW:
+      Serial.println("[E] Unhandled PIXFORMAT_RAW");
+      esp_deep_sleep_start();
+      break;
+  }
+}
+
 inline void capture_n_upload() {
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
@@ -150,7 +195,7 @@ inline void capture_n_upload() {
 
   HTTPClient http;
   http.begin(SERVER_HTTP_URL);
-  http.addHeader("Content-Type", "application/octet-stream");
+  http.addHeader("Content-Type", HTTP_ContentType);
   int httpResponseCode = http.POST(fb->buf, fb->len);
   if (httpResponseCode > 0) ;
   else {
@@ -168,9 +213,10 @@ void setup() {
   init_wifi();
   init_cam();
   config_camsensor();
+  init_httpConfig();
 }
 
 void loop() {
   capture_n_upload();
-  delay(CAPTUREN_N_UPLOAD_DELAY_MS);
+  delay(CAPTURE_N_UPLOAD_DELAY_MS);
 }
