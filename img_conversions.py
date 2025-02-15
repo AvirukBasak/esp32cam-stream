@@ -33,12 +33,20 @@ def convert_to_jpeg(image_data, format_type, width, height):
     
     def rgb565_to_rgb888(data):
         rgb565 = np.frombuffer(data, dtype=np.uint16).reshape(height, width)
-        r = (rgb565 & 0xF800) >> 11
-        g = (rgb565 & 0x07E0) >> 5
-        b = rgb565 & 0x001F
-        bgr565 = (b << 11) | (g << 5) | r
-        bgr565 = bgr565.view(np.uint8).reshape((height, width, 2))
-        rgb888 = cv2.cvtColor(bgr565, cv2.COLOR_BGR5652RGB)
+        # Extract channels
+        r = ((rgb565 >> 11) & 0x1F)
+        g = ((rgb565 >> 5) & 0x3F)
+        b = (rgb565 & 0x1F)
+        # Convert to RGB888
+        r = (r << 3) | (r >> 2)
+        g = (g << 2) | (g >> 4)
+        b = (b << 3) | (b >> 2)
+        # Combine channels
+        # bgr565 = (r << 11) | (g << 5) | b
+        # bgr565 = bgr565.view(np.uint8).reshape((height, width, 2))
+        # rgb888 = cv2.cvtColor(bgr565, cv2.COLOR_BGR5652RGB)
+        # Custom np array
+        rgb888 = np.stack((r, g, b), axis=-1).astype(np.uint8)
         return rgb888
     
     def rgb444_to_rgb888(data):
