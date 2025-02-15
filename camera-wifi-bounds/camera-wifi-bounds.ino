@@ -10,7 +10,7 @@
 
 #define CAMERA_MODEL_AI_THINKER
 #define CAMERA_PIXEL_FORMAT (PIXFORMAT_YUV422)
-#define CAPTURE_N_UPLOAD_DELAY_MS (1000)
+#define CAPTURE_N_UPLOAD_DELAY_MS (250)
 
 #define WIFI_SSID ("Begonia")
 #define WIFI_PASSWD ("a r s h o l a")
@@ -33,6 +33,8 @@ struct ImageUploadFormats {
 };
 
 const char *HTTP_ContentType = NULL;
+const char *HTTP_ImageWidth = "240";
+const char *HTTP_ImageHeight = "240";
 
 inline void init_first() {
   setCpuFrequencyMhz(240);
@@ -98,8 +100,8 @@ inline void init_cam() {
   config.pixel_format = CAMERA_PIXEL_FORMAT;
 
   // Lower resolution for less bandwidth usage and faster upload
-  config.frame_size = FRAMESIZE_VGA;  // 640x480
-  config.jpeg_quality = 12;           // 0-63, lower is higher quality
+  config.frame_size = FRAMESIZE_240X240;  // Frame Size
+  config.jpeg_quality = 32;               // 0-63, lower is higher quality
   config.fb_count = 1;
 
   // Deep slled ESP on camera init failure
@@ -202,6 +204,8 @@ inline void capture_n_upload() {
   HTTPClient http;
   http.begin(SERVER_HTTP_URL);
   http.addHeader("Content-Type", HTTP_ContentType);
+  http.addHeader("X-Image-Width", HTTP_ImageWidth);
+  http.addHeader("X-Image-Height", HTTP_ImageHeight);
   int httpResponseCode = http.POST(fb->buf, fb->len);
   if (httpResponseCode > 0) ;
   else {

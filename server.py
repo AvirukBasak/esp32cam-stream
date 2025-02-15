@@ -38,9 +38,9 @@ def index():
 @app.route('/', methods=['POST'])
 def upload_image():
     image_raw = request.data
-    width, height = 640, 480
+    width, height = int(request.headers['X-Image-Width']), int(request.headers['X-Image-Height'])
     try:
-        jpeg_bytes = convert_to_jpeg(image_raw, request.content_type, width, height).getvalue()
+        jpeg_bytes = convert_to_jpeg(image_raw, request.headers['Content-Type'], width, height).getvalue()
     except Exception as e:
         print('[E]', e)
         return "Internal Server Error", 555
