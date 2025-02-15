@@ -19,6 +19,8 @@
 #define UDP_PAYLOAD_SIZE (1024)
 #define SERVER_HTTP_URL ("http://192.168.181.119:5000")
 
+#define CAPTUREN_N_UPLOAD_DELAY_MS (10)
+
 inline void init_first() {
   setCpuFrequencyMhz(240);
   // Disable brownout detector
@@ -170,5 +172,5 @@ void setup() {
 
 void loop() {
   capture_n_upload();
-  delay(100);
+  delay(CAPTUREN_N_UPLOAD_DELAY_MS);
 }
