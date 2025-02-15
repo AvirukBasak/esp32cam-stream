@@ -9,7 +9,7 @@
 #include "soc/rtc_cntl_reg.h"
 
 #define CAMERA_MODEL_AI_THINKER
-#define CAMERA_PIXEL_FORMAT (PIXFORMAT_RGB565)
+#define CAMERA_PIXEL_FORMAT (PIXFORMAT_RAW)
 #define CAPTURE_N_UPLOAD_DELAY_MS (1000)
 
 #define WIFI_SSID ("Begonia")
@@ -22,9 +22,14 @@
 
 struct ImageUploadFormats {
   static constexpr const char *RGB565 = "image/rgb565";
-  static constexpr const char *RGB555 = "image/rgb555";
-  static constexpr const char *RGB444 = "image/rgb444";
   static constexpr const char *GS = "image/grayscale";
+  static constexpr const char *RGB444 = "image/rgb444";
+  static constexpr const char *RGB555 = "image/rgb555";
+  static constexpr const char *RGB888 = "image/rgb888";
+  static constexpr const char *JPEG = "image/jpeg";
+  static constexpr const char *YUV422 = "image/yuv422";
+  static constexpr const char *YUV420 = "image/yuv420";
+  static constexpr const char *RAW = "image/raw";
 };
 
 const char *HTTP_ContentType = NULL;
@@ -100,7 +105,7 @@ inline void init_cam() {
   // Deep slled ESP on camera init failure
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x\n", err);
+    Serial.printf("[E] Camera init failed with error 0x%x\n", err);
     esp_deep_sleep_start();
     return;
   }
@@ -143,34 +148,39 @@ inline void init_httpConfig() {
     case PIXFORMAT_RGB565:
       HTTP_ContentType = ImageUploadFormats::RGB565;
       break;
-    case PIXFORMAT_RGB555:
-      HTTP_ContentType = ImageUploadFormats::RGB555;
-      break;
-    case PIXFORMAT_RGB444:
-      HTTP_ContentType = ImageUploadFormats::RGB444;
-      break;
     case PIXFORMAT_GRAYSCALE:
       HTTP_ContentType = ImageUploadFormats::GS;
       break;
-    case PIXFORMAT_YUV422:
-      Serial.println("[E] Unhandled PIXFORMAT_YUV422");
+    case PIXFORMAT_RGB444:
+      Serial.println("[E] Unsupported PIXFORMAT_RGB444");
       esp_deep_sleep_start();
       break;
-    case PIXFORMAT_YUV420:
-      Serial.println("[E] Unhandled PIXFORMAT_YUV420");
-      esp_deep_sleep_start();
-      break;
-    case PIXFORMAT_JPEG:
-      Serial.println("[E] Unsupported PIXFORMAT_JPEG");
+    case PIXFORMAT_RGB555:
+      Serial.println("[E] Unsupported PIXFORMAT_RGB555");
       esp_deep_sleep_start();
       break;
     case PIXFORMAT_RGB888:
       Serial.println("[E] Unsupported PIXFORMAT_RGB888");
       esp_deep_sleep_start();
       break;
-    case PIXFORMAT_RAW:
-      Serial.println("[E] Unhandled PIXFORMAT_RAW");
+    case PIXFORMAT_JPEG:
+      Serial.println("[E] Unsupported PIXFORMAT_JPEG");
       esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_YUV422:
+      HTTP_ContentType = ImageUploadFormats::YUV422;
+      // Serial.println("[E] Unsupported PIXFORMAT_YUV422");
+      // esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_YUV420:
+      HTTP_ContentType = ImageUploadFormats::YUV420;
+      // Serial.println("[E] Unsupported PIXFORMAT_YUV420");
+      // esp_deep_sleep_start();
+      break;
+    case PIXFORMAT_RAW:
+      HTTP_ContentType = ImageUploadFormats::RAW;
+      // Serial.println("[E] Unsupported PIXFORMAT_RAW");
+      // esp_deep_sleep_start();
       break;
   }
 }
@@ -178,7 +188,7 @@ inline void init_httpConfig() {
 inline void capture_n_upload() {
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.print("Lost WiFi connection, connecting...");
+    Serial.print("[E] Lost WiFi connection, connecting...");
     while (WiFi.status() != WL_CONNECTED) {
       Serial.print(".");
       delay(1000);
@@ -189,7 +199,7 @@ inline void capture_n_upload() {
   // Take a picture
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("Camera capture failed");
+    Serial.println("[E] Camera capture failed");
     return;
   }
 
@@ -199,7 +209,7 @@ inline void capture_n_upload() {
   int httpResponseCode = http.POST(fb->buf, fb->len);
   if (httpResponseCode > 0) ;
   else {
-    Serial.printf("Error on HTTP request: %s (%d)\n", http.errorToString(httpResponseCode).c_str(), httpResponseCode);
+    Serial.printf("[E] Error on HTTP request: %s (%d)\n", http.errorToString(httpResponseCode).c_str(), httpResponseCode);
   }
   http.end();
 
