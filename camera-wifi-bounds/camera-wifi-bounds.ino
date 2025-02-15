@@ -9,7 +9,7 @@
 #include "soc/rtc_cntl_reg.h"
 
 #define CAMERA_MODEL_AI_THINKER
-#define CAMERA_PIXEL_FORMAT (PIXFORMAT_RAW)
+#define CAMERA_PIXEL_FORMAT (PIXFORMAT_YUV422)
 #define CAPTURE_N_UPLOAD_DELAY_MS (1000)
 
 #define WIFI_SSID ("Begonia")
@@ -145,11 +145,14 @@ inline void config_camsensor() {
 
 inline void init_httpConfig() {
   switch (CAMERA_PIXEL_FORMAT) {
-    case PIXFORMAT_RGB565:
-      HTTP_ContentType = ImageUploadFormats::RGB565;
+    case PIXFORMAT_YUV422:
+      HTTP_ContentType = ImageUploadFormats::YUV422;
       break;
     case PIXFORMAT_GRAYSCALE:
       HTTP_ContentType = ImageUploadFormats::GS;
+      break;
+    case PIXFORMAT_RGB565:
+      HTTP_ContentType = ImageUploadFormats::RGB565;
       break;
     case PIXFORMAT_RGB444:
       Serial.println("[E] Unsupported PIXFORMAT_RGB444");
@@ -167,20 +170,13 @@ inline void init_httpConfig() {
       Serial.println("[E] Unsupported PIXFORMAT_JPEG");
       esp_deep_sleep_start();
       break;
-    case PIXFORMAT_YUV422:
-      HTTP_ContentType = ImageUploadFormats::YUV422;
-      // Serial.println("[E] Unsupported PIXFORMAT_YUV422");
-      // esp_deep_sleep_start();
-      break;
     case PIXFORMAT_YUV420:
-      HTTP_ContentType = ImageUploadFormats::YUV420;
-      // Serial.println("[E] Unsupported PIXFORMAT_YUV420");
-      // esp_deep_sleep_start();
+      Serial.println("[E] Unsupported PIXFORMAT_YUV420");
+      esp_deep_sleep_start();
       break;
     case PIXFORMAT_RAW:
-      HTTP_ContentType = ImageUploadFormats::RAW;
-      // Serial.println("[E] Unsupported PIXFORMAT_RAW");
-      // esp_deep_sleep_start();
+      Serial.println("[E] Unsupported PIXFORMAT_RAW");
+      esp_deep_sleep_start();
       break;
   }
 }
