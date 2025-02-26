@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <HTTPClient.h>
+#include "miniz.h"
 #include "esp_camera.h"
 #include "esp_timer.h"
 
@@ -10,15 +11,16 @@
 
 #define CAMERA_MODEL_AI_THINKER
 #define CAMERA_PIXEL_FORMAT (PIXFORMAT_YUV422)
-#define CAPTURE_N_UPLOAD_DELAY_MS (250)
+#define CAMERA_FRAMESIZE (FRAMESIZE_SVGA)
+#define CAPTURE_N_UPLOAD_DELAY_MS (5000)
 
 #define WIFI_SSID ("Begonia")
 #define WIFI_PASSWD ("a r s h o l a")
 
-#define SERVER_IP ("192.168.181.119")
+#define SERVER_IP ("192.168.231.119")
 #define SERVER_UDP_PORT (8080)
 #define SERVER_UDP_PAYLOAD_SIZE (1024)
-#define SERVER_HTTP_URL ("http://192.168.181.119:5000")
+#define SERVER_HTTP_URL ("http://192.168.231.119:5000")
 
 struct ImageUploadFormats {
   static constexpr const char *RGB565 = "image/rgb565";
@@ -33,8 +35,11 @@ struct ImageUploadFormats {
 };
 
 const char *HTTP_ContentType = NULL;
-const char *HTTP_ImageWidth = "240";
-const char *HTTP_ImageHeight = "240";
+const char *HTTP_ImageWidth = NULL;
+const char *HTTP_ImageHeight = NULL;
+
+int Server_ErrCount = 0;
+int Server_ErrCountThreshold = 5;
 
 inline void init_first() {
   setCpuFrequencyMhz(240);
@@ -100,8 +105,8 @@ inline void init_cam() {
   config.pixel_format = CAMERA_PIXEL_FORMAT;
 
   // Lower resolution for less bandwidth usage and faster upload
-  config.frame_size = FRAMESIZE_240X240;  // Frame Size
-  config.jpeg_quality = 32;               // 0-63, lower is higher quality
+  config.frame_size = CAMERA_FRAMESIZE;  // Frame Size
+  config.jpeg_quality = 60;              // 0-63, lower is higher quality
   config.fb_count = 1;
 
   // Deep slled ESP on camera init failure
@@ -157,28 +162,80 @@ inline void init_httpConfig() {
       HTTP_ContentType = ImageUploadFormats::RGB565;
       break;
     case PIXFORMAT_RGB444:
-      Serial.println("[E] Unsupported PIXFORMAT_RGB444");
-      esp_deep_sleep_start();
+      HTTP_ContentType = ImageUploadFormats::RGB444;
       break;
     case PIXFORMAT_RGB555:
-      Serial.println("[E] Unsupported PIXFORMAT_RGB555");
-      esp_deep_sleep_start();
+      HTTP_ContentType = ImageUploadFormats::RGB555;
       break;
     case PIXFORMAT_RGB888:
-      Serial.println("[E] Unsupported PIXFORMAT_RGB888");
-      esp_deep_sleep_start();
+      HTTP_ContentType = ImageUploadFormats::RGB888;
       break;
     case PIXFORMAT_JPEG:
-      Serial.println("[E] Unsupported PIXFORMAT_JPEG");
-      esp_deep_sleep_start();
+      HTTP_ContentType = ImageUploadFormats::JPEG;
       break;
     case PIXFORMAT_YUV420:
-      Serial.println("[E] Unsupported PIXFORMAT_YUV420");
-      esp_deep_sleep_start();
+      HTTP_ContentType = ImageUploadFormats::YUV420;
       break;
     case PIXFORMAT_RAW:
-      Serial.println("[E] Unsupported PIXFORMAT_RAW");
+      HTTP_ContentType = ImageUploadFormats::RAW;
+      break;
+  }
+
+  switch (CAMERA_FRAMESIZE) {
+    case FRAMESIZE_QQVGA:
+      HTTP_ImageWidth = "160";
+      HTTP_ImageHeight = "120";
+      break;
+    case FRAMESIZE_QVGA:
+      HTTP_ImageWidth = "320";
+      HTTP_ImageHeight = "240";
+      break;
+    case FRAMESIZE_CIF:
+      HTTP_ImageWidth = "400";
+      HTTP_ImageHeight = "296";
+      break;
+    case FRAMESIZE_VGA:
+      HTTP_ImageWidth = "640";
+      HTTP_ImageHeight = "480";
+      break;
+    case FRAMESIZE_SVGA:
+      HTTP_ImageWidth = "800";
+      HTTP_ImageHeight = "600";
+      break;
+    case FRAMESIZE_XGA:
+      HTTP_ImageWidth = "1024";
+      HTTP_ImageHeight = "768";
+      break;
+    case FRAMESIZE_HD:
+      HTTP_ImageWidth = "1280";
+      HTTP_ImageHeight = "720";
+      break;
+    case FRAMESIZE_SXGA:
+      HTTP_ImageWidth = "1280";
+      HTTP_ImageHeight = "1024";
+      break;
+    case FRAMESIZE_UXGA:
+      HTTP_ImageWidth = "1600";
+      HTTP_ImageHeight = "1200";
+      break;
+    case FRAMESIZE_FHD:
+      HTTP_ImageWidth = "1920";
+      HTTP_ImageHeight = "1080";
+      break;
+    case FRAMESIZE_QXGA:
+      HTTP_ImageWidth = "2048";
+      HTTP_ImageHeight = "1536";
+      break;
+    case FRAMESIZE_WQXGA:
+      HTTP_ImageWidth = "2560";
+      HTTP_ImageHeight = "1600";
+      break;
+    case FRAMESIZE_INVALID:
+      Serial.println("[E] Invalid FRAMESIZE");
       esp_deep_sleep_start();
+      break;
+    default:
+      Serial.println("[E] Don't care about other frame sizes");
       break;
   }
 }
@@ -206,12 +263,29 @@ inline void capture_n_upload() {
   http.addHeader("Content-Type", HTTP_ContentType);
   http.addHeader("X-Image-Width", HTTP_ImageWidth);
   http.addHeader("X-Image-Height", HTTP_ImageHeight);
-  int httpResponseCode = http.POST(fb->buf, fb->len);
-  if (httpResponseCode > 0) ;
+
+  size_t compressed_size = 0;
+  uint8_t *compressed_data = (uint8_t) tdefl_compress_buffer(tdefl_compressor *d, const void *pIn_buf, size_t in_buf_size, tdefl_flush flush)
+  if (!compressed_data) {
+    Serial.println("Compression failed!");
+    esp_deep_sleep_start();
+    return;
+  }
+
+  int httpResponseCode = http.POST(compressed_data, compressed_size);
+  if (httpResponseCode > 0)
+    ;
   else {
+    Server_ErrCount += 1;
+    if (Server_ErrCount > Server_ErrCountThreshold) {
+      Serial.printf("[E] Server error count exceeded threshold (%d)\n", Server_ErrCountThreshold);
+      esp_deep_sleep_start();
+    }
     Serial.printf("[E] Error on HTTP request: %s (%d)\n", http.errorToString(httpResponseCode).c_str(), httpResponseCode);
   }
+
   http.end();
+  mz_free(compressed_data);
 
   // Return the frame buffer to be reused
   esp_camera_fb_return(fb);
