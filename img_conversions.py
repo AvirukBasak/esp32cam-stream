@@ -4,17 +4,15 @@ import io
 import cv2
 
 """
-struct ImageUploadFormats {
-  static constexpr const char *RGB565 = "image/rgb565";
-  static constexpr const char *GS = "image/grayscale";
-  static constexpr const char *RGB444 = "image/rgb444";
-  static constexpr const char *RGB555 = "image/rgb555";
-  static constexpr const char *RGB888 = "image/rgb888";
-  static constexpr const char *JPEG = "image/jpeg";
-  static constexpr const char *YUV422 = "image/yuv422";
-  static constexpr const char *YUV420 = "image/yuv420";
-  static constexpr const char *RAW = "image/raw";
-};
+RGB565 = "image/rgb565";
+GS     = "image/grayscale";
+RGB444 = "image/rgb444";
+RGB555 = "image/rgb555";
+RGB888 = "image/rgb888";
+JPEG   = "image/jpeg";
+YUV422 = "image/yuv422";
+YUV420 = "image/yuv420";
+RAW    = "image/raw";
 """
 
 def convert_to_jpeg(image_data, format_type, width, height):
@@ -94,13 +92,13 @@ def convert_to_jpeg(image_data, format_type, width, height):
 
     # Conversion function mapping
     format_converters = {
-        'image/rgb565': rgb565_to_rgb888,
+        'image/rgb565':    rgb565_to_rgb888,
         'image/grayscale': grayscale_to_rgb888,
-        'image/rgb444': rgb444_to_rgb888,
-        'image/rgb555': rgb555_to_rgb888,
-        'image/rgb888': rgb888_to_rgb888,
-        'image/yuv422': yuv422_to_rgb888,
-        'image/yuv420': yuv420_to_rgb888,
+        'image/rgb444':    rgb444_to_rgb888,
+        'image/rgb555':    rgb555_to_rgb888,
+        'image/rgb888':    rgb888_to_rgb888,
+        'image/yuv422':    yuv422_to_rgb888,
+        'image/yuv420':    yuv420_to_rgb888,
     }
     
     try:

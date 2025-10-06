@@ -1,7 +1,6 @@
 from flask import Flask, request
 from flask_socketio import SocketIO, emit
 import base64
-import zlib
 
 from img_conversions import convert_to_jpeg
 
@@ -38,7 +37,7 @@ def index():
 
 @app.route('/', methods=['POST'])
 def upload_image():
-    image_raw = zlib.decompress(request.data)
+    image_raw = request.data
     width, height = int(request.headers['X-Image-Width']), int(request.headers['X-Image-Height'])
     try:
         jpeg_bytes = convert_to_jpeg(image_raw, request.headers['Content-Type'], width, height).getvalue()

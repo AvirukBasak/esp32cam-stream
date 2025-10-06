@@ -1,13 +1,21 @@
 # ESP32-CAM Stream
 - Model: ESP32-S (2AHMR-ESP32S)
+- Board: AI Thinker ESP32-CAM
 - Camera Module: OV2460
 - Supported PixFormats: YUV422, RGB565, Grayscale
-- PSRAM: No
+- Heap: Yes (257,712 B)
+- PSRAM: Yes (4,192,124 B)
 - WiFi: Yes
 - Bluetooth: Yes
 
 ## PixFormat YUV422 Used
-Grayscale has no color information. RGB565 couldn't be succesfully converted to RGB888. Can't use JPEG coz no PSRAM for conversion.
+- Grayscale has no color information.
+- RGB565 couldn't be succesfully converted to RGB888.
+- Sensor doesn't support JPEG.
+
+## Issues with ESP32 v3.3.0
+- Error: cam_hal DMA overflow
+- Use ESP32 v3.2.0
 
 ## Streaming
 
@@ -18,6 +26,7 @@ Easy API, slow speed (1 frame / 2 seconds) with uncompressed image data. Compres
 Untested
 
 ## ToDo
-- Compression of YUV422 data.
+- Compression of raw image data
 - Transfer over raw UDP
-- Recovery of frame from UDP packets.
+- Recovery of frame from UDP packets
+
