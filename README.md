@@ -22,7 +22,7 @@
 ### Over HTTP
 Easy API, slow speed (1 frame / 2 seconds) with uncompressed image data. Compression requires CPU.
 
-### Over raw UDB
+### Over raw UDP
 Untested
 
 ## ToDo
