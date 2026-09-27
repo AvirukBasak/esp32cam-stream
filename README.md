@@ -8,8 +8,8 @@
 - WiFi: Yes
 - Bluetooth: Yes
 
-## PixFormat YUV422 Used
-- Grayscale has no color information.
+## PixFormat YUV422 Not Used
+- Grayscale has no color information but is smaller.
 - RGB565 couldn't be succesfully converted to RGB888.
 - Sensor doesn't support JPEG.
 
@@ -23,10 +23,7 @@
 Easy API, slow speed (1 frame / 2 seconds) with uncompressed image data. Compression requires CPU.
 
 ### Over raw UDP
-Untested
+Requires some work, but achieves surprisingly higher FPS.
 
 ## ToDo
 - Compression of raw image data
-- Transfer over raw UDP
-- Recovery of frame from UDP packets
-

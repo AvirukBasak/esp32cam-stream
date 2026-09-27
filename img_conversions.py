@@ -1,3 +1,4 @@
+from typing import Any
 import numpy as np
 from PIL import Image
 import io
@@ -15,7 +16,7 @@ YUV420 = "image/yuv420";
 RAW    = "image/raw";
 """
 
-def convert_to_jpeg(image_data, format_type, width, height):
+def convert_to_jpeg(image_data, format_type, width, height) -> Any:
     """
     Convert ESP32 image data to JPEG format
     
@@ -75,8 +76,8 @@ def convert_to_jpeg(image_data, format_type, width, height):
         return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)
     
     def grayscale_to_rgb888(data):
-        # Convert 8-bit grayscale to 24-bit RGB888
-        return np.frombuffer(data, dtype=np.uint8).reshape(height, width, 1).repeat(3, axis=2)
+        # return 2D, handle mode below
+        return np.frombuffer(data, dtype=np.uint8).reshape(height, width)
     
     def yuv422_to_rgb888(data):
         yuv422 = np.frombuffer(data, dtype=np.uint8)
@@ -112,11 +113,14 @@ def convert_to_jpeg(image_data, format_type, width, height):
         if format_type not in format_converters:
             raise ValueError(f"Unsupported image format: {format_type}") 
         
-        # Convert to RGB888 format
-        rgb_data = format_converters[format_type](image_data)
-        
-        # Create PIL Image from numpy array
-        image = Image.fromarray(rgb_data)
+        if format_type == 'image/grayscale':
+            arr = np.frombuffer(image_data, dtype=np.uint8).reshape(height, width)
+            image = Image.fromarray(arr, mode='L')
+        else:
+            # Convert to RGB888 format
+            rgb_data = format_converters[format_type](image_data)
+            # Create PIL Image from numpy array
+            image = Image.fromarray(rgb_data)
         
         # Save as JPEG to bytes buffer
         jpeg_buffer = io.BytesIO()
