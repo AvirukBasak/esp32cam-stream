@@ -23,7 +23,7 @@
 Easy API, slow speed (1 frame / 2 seconds) with uncompressed image data. Compression requires CPU.
 
 ### Over raw UDP
-Requires some work, but achieves surprisingly higher FPS.
+Requires some work, but achieves surprisingly higher FPS. However, frame tear visible on motion (similar to rolling shutter effect).
 
 ## ToDo
 - Compression of raw image data
