@@ -13,60 +13,71 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
-#define WIFI_SSID                  ("SamSung")
-#define WIFI_PASSWD                ("12345678")
-#define CAM_PIXEL_FORMAT           (PIXFORMAT_GRAYSCALE)
-#define CAM_FRAMESIZE              (FRAMESIZE_HVGA)
-#define CAM_JPEG_QUALITY           (60)
-#define CAM_FRAME_BUFFERS          (2)
-#define CAM_XCLK_FREQ              (20'000'000)
+// ------------------------- Customizable Configurations -----------------------------
 
-#define CAPTURE_N_UPLOAD_DELAY_MS  (50)
+#define WIFI_SSID                      ("SamSung")
+#define WIFI_PASSWD                    ("12345678")
+#define HOST_IP                        ("10.130.207.119")
+#define HOST_UDP_PORT                  (8080)
+
+#define CAPTURE_N_UPLOAD_DELAY_MS      (50)
+
+#define CAM_PIXEL_FORMAT               (PIXFORMAT_GRAYSCALE)
+#define CAM_FRAMESIZE                  (FRAMESIZE_HVGA)
+#define CAM_JPEG_QUALITY               (60)
+#define CAM_FRAME_BUFFERS              (2)
+#define CAM_XCLK_FREQ                  (20'000'000)
+
+#define SENDER_FRAME_SEND_FAIL_THRSHLD (512)
+#define SENDER_RETRY_FRAG_THRSHLD      (16)
+#define SENDER_FRAG_RETRY_FLAG         (true)
+
+// ------------------------- UDP Frame Configs: DON'T TOUCH -----------------------------
 
 // Per-packet framing header: [frame_id:2B][frag_no:2B][total_frags:2B]
-#define UDP_FRAME_HDR_SIZE         (6)
+#define UDP_FRAME_HDR_SIZE (6)
 
 // Extra metadata sent only in fragment 0: [img_width:2B][img_height:2B][pixformat:1B]
-#define UDP_META_HDR_SIZE          (5)
+#define UDP_META_HDR_SIZE (5)
 
 // UDP protocol constants
 // WiFi sits on Ethernet (MTU=1500), minus IP(20B) + UDP(8B) = 1472B usable per datagram.
 // No IP-level fragmentation this way, safe for all standard APs.
 // Patch: was 1472 — lwIP's WiFiUDP TX buffer caps at 1460, using 1400 + fields
-#define UDP_MTU                    (1400 + UDP_FRAME_HDR_SIZE + UDP_META_HDR_SIZE) // 1411
+#define UDP_MTU (1400 + UDP_FRAME_HDR_SIZE + UDP_META_HDR_SIZE)  // 1411
 
 // Usable image bytes per fragment
-#define UDP_FRAG0_DATA_SIZE        (UDP_MTU - UDP_FRAME_HDR_SIZE - UDP_META_HDR_SIZE)  // 1400
-#define UDP_FRAGN_DATA_SIZE        (UDP_MTU - UDP_FRAME_HDR_SIZE)                      // 1405
+#define UDP_FRAG0_DATA_SIZE (UDP_MTU - UDP_FRAME_HDR_SIZE - UDP_META_HDR_SIZE)  // 1400
+#define UDP_FRAGN_DATA_SIZE (UDP_MTU - UDP_FRAME_HDR_SIZE)                      // 1405
 
-// Disabled if <= 0
-#define SERVER_ERR_COUNT_THRSHLD   (-1)
-#define SERVER_FLAG_RETRY_FRAG     (false)
-#define SERVER_RETRY_FRAG_ATTEMPTS (5)
-
-#define SERVER_IP                  ("10.130.207.119")
-#define SERVER_UDP_PORT            (8080)
-
-int        Server_ErrCount   = 0;
-int        Server_RetryCount = 0;
-uint16_t   Frame_Id          = 0;
-WiFiUDP    Udp;
+uint16_t Frame_Id = 0;
+WiFiUDP Udp;
 
 // Scratch buffer sized for one full UDP datagram
 static uint8_t Udp_Buf[UDP_MTU];
 
-inline void init_board() {
+// ------------------------- UDP "Flow Control" -----------------------------
+
+int Sender_FrameSendFailCount = 0;  // how many frames failed
+int Sender_FragRetryCount = 0;      // how many times a failed current fragment retried
+
+// --------------------------- Init Procedures ------------------------------
+
+inline void init_board()
+{
   setCpuFrequencyMhz(240);
   // Disable brownout detector
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 }
 
-inline void init_serial() {
+inline void init_serial()
+{
   Serial.begin(115200);
   Serial.println("[I] ESP32-CAM Image Capture and Upload");
 }
 
-inline void init_wifi() {
+inline void init_wifi()
+{
   WiFi.begin(WIFI_SSID, WIFI_PASSWD);
   Serial.print("[I] Connecting to WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
@@ -77,8 +88,8 @@ inline void init_wifi() {
   WiFi.setSleep(false);
 }
 
-inline void init_cam() {
-
+inline void init_cam()
+{
 #define PWDN_GPIO_NUM  (32)
 #define RESET_GPIO_NUM (-1)
 #define XCLK_GPIO_NUM  (0)
@@ -137,7 +148,8 @@ inline void init_cam() {
   Serial.println("[I] Camera initialized successfully");
 }
 
-inline void config_cam() {
+inline void config_cam()
+{
   // Set higher quality after initialization if you want
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
@@ -167,18 +179,147 @@ inline void config_cam() {
   }
 }
 
+// ------------------------- Helper Functions -----------------------------
+
 // Write a uint16 big-endian into buf at offset, advance offset
-static inline void write_u16(uint8_t *buf, size_t &off, uint16_t val) {
+static inline void write_u16(uint8_t *buf, size_t &off, uint16_t val)
+{
   buf[off++] = (val >> 8) & 0xFF;
-  buf[off++] =  val       & 0xFF;
+  buf[off++] = val & 0xFF;
 }
 
 // Write a uint8 into buf at offset, advance offset
-static inline void write_u8(uint8_t *buf, size_t &off, uint8_t val) {
+static inline void write_u8(uint8_t *buf, size_t &off, uint8_t val)
+{
   buf[off++] = val;
 }
 
-inline void capture_n_upload() {
+static inline bool send_fragment(
+  uint16_t frame_id, uint16_t frag_no,     uint16_t total_frags,
+  size_t   img_len,  uint16_t img_w,       uint16_t img_h,
+  uint8_t  img_fmt,  size_t   &img_offset, size_t   &pkt_off,
+  size_t   &sent,    const uint8_t *img_data
+) {
+  // --- Frame header (all fragments) ---
+  // [frame_id:2B][frag_no:2B][total_frags:2B]
+  write_u16(Udp_Buf, pkt_off, frame_id);
+  write_u16(Udp_Buf, pkt_off, frag_no);
+  write_u16(Udp_Buf, pkt_off, total_frags);
+
+  // --- Metadata header (fragment 0 only) ---
+  // [img_width:2B][img_height:2B][pixformat:1B]
+  if (frag_no == 0) {
+    write_u16(Udp_Buf, pkt_off, img_w);
+    write_u16(Udp_Buf, pkt_off, img_h);
+    write_u8 (Udp_Buf, pkt_off, img_fmt);
+  }
+
+  // --- Image data payload ---
+  size_t data_capacity = UDP_MTU - pkt_off;
+  size_t data_len      = min(data_capacity, img_len - img_offset);
+
+  memcpy(Udp_Buf + pkt_off, img_data + img_offset, data_len);
+  img_offset += data_len;
+  pkt_off    += data_len;
+
+  // Send the datagram
+  Udp.beginPacket(HOST_IP, HOST_UDP_PORT);
+  sent = Udp.write(Udp_Buf, pkt_off);
+
+  bool ok = Udp.endPacket();
+  return ok;
+}
+
+static inline bool send_frame(camera_fb_t *fb)
+{
+  bool return_val = false;
+
+  const uint8_t *img_data = fb->buf;
+
+  size_t   img_len = fb->len;
+  uint16_t img_w   = (uint16_t) fb->width;
+  uint16_t img_h   = (uint16_t) fb->height;
+  uint8_t  img_fmt = (uint8_t)  fb->format; // maps directly to pixformat_t enum
+
+  // Calculate total fragments needed
+  uint16_t total_frags;
+  if (img_len <= UDP_FRAG0_DATA_SIZE) {
+    total_frags = 1;
+  } else {
+    size_t remaining = img_len - UDP_FRAG0_DATA_SIZE;
+    total_frags = 1 + (uint16_t)((remaining + UDP_FRAGN_DATA_SIZE - 1) / UDP_FRAGN_DATA_SIZE);
+  }
+
+  size_t img_offset = 0;
+
+  uint16_t frag_no = 0;
+  for (frag_no = 0; frag_no < total_frags; ++frag_no) {
+
+send_frame_retry_fragment:
+
+    size_t pkt_off = 0;
+    size_t sent    = 0;
+
+    bool frag_ok = send_fragment(
+      Frame_Id, frag_no,    total_frags,
+      img_len,  img_w,      img_h,
+      img_fmt,  img_offset, pkt_off,
+      sent,     img_data
+    );
+
+    // taskYIELD(); // just yield to lwIP task, no fixed sleep
+    // delay(1);    // instead use non-blocking sleep
+
+    // On success, next iteration
+    if (frag_ok && sent == pkt_off) {
+      // After successful send, reset retry counter
+      Sender_FragRetryCount = 0;
+      goto send_frame_next_fragment;
+    }
+
+    // On failure, attempt retry if enabled
+    if (SENDER_FRAG_RETRY_FLAG) {
+
+      Sender_FragRetryCount += 1;
+
+      if (Sender_FragRetryCount > SENDER_RETRY_FRAG_THRSHLD) {
+        // Stop retrying on threshold, skip frame
+        return_val = false;
+        goto send_frame_next_frame;
+      } else {
+        // Retry fragment otherwise
+        goto send_frame_retry_fragment;
+      }
+
+    } else {
+      // If retry disabled, just skip frame
+      return_val = false;
+      goto send_frame_next_frame;
+    }
+
+
+send_frame_next_fragment:
+
+  }
+
+  // Only time its true is if all fragments were sent
+  return_val = (frag_no == total_frags);
+
+
+send_frame_next_frame:
+  // Wraps at 65535 → 0, receiver handles it
+  // Serial.printf("[I] send_frame(%d): frags: %d/%d, success?: %d\n", Frame_Id, frag_no, total_frags, return_val);
+  Frame_Id++;
+  return return_val;
+}
+
+// ------------------------- Main Cam Capture Logic -----------------------------
+
+inline bool capture_n_upload()
+{
+  bool return_val = false;
+  bool frame_ok   = false;
+
   // Check WiFi connection
   if (WiFi.status() != WL_CONNECTED) {
     Serial.print("[E] Lost WiFi connection, connecting...");
@@ -193,118 +334,46 @@ inline void capture_n_upload() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("[E] Camera capture failed");
-    return;
+    goto capture_n_upload_clean_return;
   }
 
-  const uint8_t *img_data  = fb->buf;
-  size_t         img_len   = fb->len;
-  uint16_t       img_w     = (uint16_t)fb->width;
-  uint16_t       img_h     = (uint16_t)fb->height;
-  uint8_t        img_fmt   = (uint8_t)fb->format;   // maps directly to pixformat_t enum
+  // Send the frame
+  frame_ok = send_frame(fb);
 
-  // Calculate total fragments needed
-  uint16_t total_frags;
-  if (img_len <= UDP_FRAG0_DATA_SIZE) {
-    total_frags = 1;
-  } else {
-    size_t remaining = img_len - UDP_FRAG0_DATA_SIZE;
-    total_frags = 1 + (uint16_t)((remaining + UDP_FRAGN_DATA_SIZE - 1) / UDP_FRAGN_DATA_SIZE);
+  if (!frame_ok) {
+
+    Sender_FrameSendFailCount += 1;
+
+    if (SENDER_FRAME_SEND_FAIL_THRSHLD > 0) {
+
+      if (Sender_FrameSendFailCount > SENDER_FRAME_SEND_FAIL_THRSHLD) {
+          Serial.printf("[E] Failed %d consecutive frame send, stopping captures\n", SENDER_FRAME_SEND_FAIL_THRSHLD);
+          // Stop captures and upload
+          return_val = false;
+          goto capture_n_upload_clean_return;
+      }
+
+      Serial.printf("[E] Frame (%d) send failed\n", Frame_Id);
+
+    }
+
+    return_val = true;
+    goto capture_n_upload_clean_return;
   }
 
-  size_t img_offset = 0;
+  // Coz consecutive, occasional frame send failures are expected
+  Sender_FrameSendFailCount = 0;
+  return_val = true;
 
-  for (uint16_t frag_no = 0; frag_no < total_frags; frag_no++) {
-
-redo_loop_but_dont_increment:
-
-    size_t pkt_off = 0;
-
-    // --- Frame header (all fragments) ---
-    // [frame_id:2B][frag_no:2B][total_frags:2B]
-    write_u16(Udp_Buf, pkt_off, Frame_Id);
-    write_u16(Udp_Buf, pkt_off, frag_no);
-    write_u16(Udp_Buf, pkt_off, total_frags);
-
-    // --- Metadata header (fragment 0 only) ---
-    // [img_width:2B][img_height:2B][pixformat:1B]
-    if (frag_no == 0) {
-      write_u16(Udp_Buf, pkt_off, img_w);
-      write_u16(Udp_Buf, pkt_off, img_h);
-      write_u8 (Udp_Buf, pkt_off, img_fmt);
-    }
-
-    // --- Image data payload ---
-    size_t data_capacity = UDP_MTU - pkt_off;
-    size_t data_len      = min(data_capacity, img_len - img_offset);
-
-    memcpy(Udp_Buf + pkt_off, img_data + img_offset, data_len);
-    img_offset += data_len;
-    pkt_off    += data_len;
-
-    // Send the datagram
-    Udp.beginPacket(SERVER_IP, SERVER_UDP_PORT);
-    size_t sent = Udp.write(Udp_Buf, pkt_off);
-    bool ok     = Udp.endPacket();
-
-    // taskYIELD(); // just yield to lwIP task, no fixed sleep
-    // delay(1); // u should sleep
-
-    // handle error in send
-    if (!ok || sent != pkt_off) {
-      Server_ErrCount += 1;
-
-      // if error threshold is set, exit once crossed
-      if (SERVER_ERR_COUNT_THRSHLD > 0) {
-        // if threshold reached, sleep
-        if (Server_ErrCount > SERVER_ERR_COUNT_THRSHLD) {
-          Serial.printf("[E] Server error count exceeded threshold (%d)\n", SERVER_ERR_COUNT_THRSHLD);
-          esp_deep_sleep_start();
-        }
-        // else just print
-        Serial.printf("[E] UDP send failed (frame %d, frag %d/%d)\n", Frame_Id, frag_no, total_frags - 1);
-      }
-
-      // otherwise
-      else {
-        // print no of errors periodically
-        if (Server_ErrCount % 100 == 0) {
-          Serial.printf("[E] Failed UDP sends: %d\n", Server_ErrCount);
-        }
-      }
-
-      if (SERVER_FLAG_RETRY_FRAG) {
-        // on error, retry fragment
-        Server_RetryCount++;
-        if (Server_RetryCount > SERVER_RETRY_FRAG_ATTEMPTS) {
-          // break out of the loop (retries failed)
-          Server_RetryCount = 0;
-          break;
-        } else {
-          // this avoids an underflow (even tho it should just overflow back to 0)
-          if (frag_no == 0) goto redo_loop_but_dont_increment;
-          frag_no--;
-        }
-      } else {
-        // on error, break out of the loop (no point in sending later fragments, this frame is done for)
-        break;
-      }
-
-    } // on error if bloc
-
-    else {
-      // after successful send, reset retry counter
-      Server_RetryCount = 0;
-    }
-
-  } // fragment for loop
-
-  Frame_Id++;   // Wraps at 65535 → 0, receiver handles it
+capture_n_upload_clean_return:
 
   // Return the frame buffer to be reused
   esp_camera_fb_return(fb);
+  return return_val;
 }
 
-void setup() {
+void setup()
+{
   init_board();
   init_serial();
   init_wifi();
@@ -312,8 +381,18 @@ void setup() {
   config_cam();
 }
 
-void loop() {
-  esp_wifi_set_ps(WIFI_PS_NONE); // dont sleep?
-  capture_n_upload();
-  delay(CAPTURE_N_UPLOAD_DELAY_MS);
+void loop()
+{
+  static bool capture_or_dummy_mode = true;
+  static uint64_t dummy_counter = 0;
+
+  if (capture_or_dummy_mode) {
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    capture_or_dummy_mode = capture_n_upload();
+    delay(CAPTURE_N_UPLOAD_DELAY_MS);
+  } else {
+    Serial.printf("Seconds Elapsed Counter = %d\n", ++dummy_counter);
+    delay(1000);
+  }
+
 }

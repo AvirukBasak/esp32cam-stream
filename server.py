@@ -14,7 +14,7 @@ from img_conversions import convert_to_jpeg
 # ---------------------------------------------------------------------------
 # Frame storage capacities
 # ---------------------------------------------------------------------------
-MAX_FRAME_STORE_SIZE  = 2
+MAX_FRAME_STORE_SIZE  = 5
 MAX_FRAME_BUFFER_SIZE = MAX_FRAME_STORE_SIZE
 MAX_FRAME_QUEUE_SIZE  = MAX_FRAME_STORE_SIZE
 
