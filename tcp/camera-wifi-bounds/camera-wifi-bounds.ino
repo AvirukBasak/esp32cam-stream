@@ -1,0 +1,287 @@
+#include <WiFi.h>
+#include <Wire.h>
+
+#include "esp_wifi.h"
+
+#define CAMERA_MODEL_AI_THINKER
+
+#include "esp_camera.h"
+#include "esp_timer.h"
+
+// Disable brownout problems
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
+// ------------------------- Customizable Configurations -----------------------------
+
+#define WIFI_SSID                      ("SamSung")
+#define WIFI_PASSWD                    ("12345678")
+#define HOST_IP                        ("10.130.207.119")
+#define HOST_TCP_PORT                  (8080)
+
+#define CAPTURE_N_UPLOAD_DELAY_MS      (50)
+
+#define CAM_PIXEL_FORMAT               (PIXFORMAT_GRAYSCALE)
+#define CAM_FRAMESIZE                  (FRAMESIZE_HVGA)
+#define CAM_JPEG_QUALITY               (60)
+#define CAM_FRAME_BUFFERS              (2)
+#define CAM_XCLK_FREQ                  (20'000'000)
+
+// ------------------------- UDP Frame Configs: DON'T TOUCH -----------------------------
+
+#define TCP_CONNECT_TIMEOUT_MS (10000)
+
+// [frame_id:2B][img_len:4B][img_w:2B][img_h:2B][pixfmt:1B] = 11 bytes
+#define TCP_FRAME_HDR_SIZE (11)
+
+uint16_t Frame_Id = 0;
+WiFiClient Tcp;
+
+// --------------------------- Init Procedures ------------------------------
+
+inline void init_board()
+{
+  setCpuFrequencyMhz(240);
+  // Disable brownout detector
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+}
+
+inline void init_serial()
+{
+  Serial.begin(115200);
+  Serial.println("[I] ESP32-CAM Image Capture and Upload");
+}
+
+inline void init_wifi()
+{
+  WiFi.begin(WIFI_SSID, WIFI_PASSWD);
+  Serial.print("[I] Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(1000);
+  }
+  Serial.printf(" Connected (%s)\n", WiFi.localIP().toString().c_str());
+  WiFi.setSleep(false);
+}
+
+inline void init_cam()
+{
+#define PWDN_GPIO_NUM  (32)
+#define RESET_GPIO_NUM (-1)
+#define XCLK_GPIO_NUM  (0)
+#define SIOD_GPIO_NUM  (26)
+#define SIOC_GPIO_NUM  (27)
+#define Y9_GPIO_NUM    (35)
+#define Y8_GPIO_NUM    (34)
+#define Y7_GPIO_NUM    (39)
+#define Y6_GPIO_NUM    (36)
+#define Y5_GPIO_NUM    (21)
+#define Y4_GPIO_NUM    (19)
+#define Y3_GPIO_NUM    (18)
+#define Y2_GPIO_NUM    (5)
+#define VSYNC_GPIO_NUM (25)
+#define HREF_GPIO_NUM  (23)
+#define PCLK_GPIO_NUM  (22)
+
+  Serial.printf("[I] Free heap: %d bytes\n", ESP.getFreeHeap());
+  Serial.printf("[I] Free PSRAM: %d bytes\n", ESP.getFreePsram());
+
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer   = LEDC_TIMER_0;
+  config.pin_d0       = Y2_GPIO_NUM;
+  config.pin_d1       = Y3_GPIO_NUM;
+  config.pin_d2       = Y4_GPIO_NUM;
+  config.pin_d3       = Y5_GPIO_NUM;
+  config.pin_d4       = Y6_GPIO_NUM;
+  config.pin_d5       = Y7_GPIO_NUM;
+  config.pin_d6       = Y8_GPIO_NUM;
+  config.pin_d7       = Y9_GPIO_NUM;
+  config.pin_xclk     = XCLK_GPIO_NUM;
+  config.pin_pclk     = PCLK_GPIO_NUM;
+  config.pin_vsync    = VSYNC_GPIO_NUM;
+  config.pin_href     = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn     = PWDN_GPIO_NUM;
+  config.pin_reset    = RESET_GPIO_NUM;
+  config.xclk_freq_hz = CAM_XCLK_FREQ;
+  config.pixel_format = CAM_PIXEL_FORMAT;
+  config.frame_size   = CAM_FRAMESIZE;
+  config.jpeg_quality = CAM_JPEG_QUALITY;
+  config.fb_count     = CAM_FRAME_BUFFERS;
+  config.fb_location  = CAMERA_FB_IN_PSRAM;
+  config.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
+
+  // Deep sleep ESP on camera init failure
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("[E] Camera init failed with error 0x%x\n", err);
+    esp_deep_sleep_start();
+    return;
+  }
+
+  Serial.println("[I] Camera initialized successfully");
+}
+
+inline void config_cam()
+{
+  // Set higher quality after initialization if you want
+  sensor_t *s = esp_camera_sensor_get();
+  if (s) {
+    s->set_brightness(s, 0);                  // -2 to 2
+    s->set_contrast(s, 0);                    // -2 to 2
+    s->set_saturation(s, 0);                  // -2 to 2
+    s->set_special_effect(s, 0);              // 0 = no effect
+    s->set_whitebal(s, 1);                    // 0 = disable, 1 = enable
+    s->set_awb_gain(s, 1);                    // 0 = disable, 1 = enable
+    s->set_wb_mode(s, 0);                     // Auto mode
+    s->set_exposure_ctrl(s, 1);               // 0 = disable, 1 = enable
+    s->set_gain_ctrl(s, 1);                   // 0 = disable, 1 = enable
+    s->set_aec2(s, 0);                        // 0 = disable, 1 = enable
+    s->set_ae_level(s, 0);                    // -2 to 2
+    s->set_aec_value(s, 300);                 // 0 to 1200
+    s->set_gain_ctrl(s, 1);                   // 0 = disable, 1 = enable
+    s->set_agc_gain(s, 0);                    // 0 to 30
+    s->set_gainceiling(s, (gainceiling_t)0);  // 0 to 6
+    s->set_bpc(s, 0);                         // 0 = disable, 1 = enable
+    s->set_wpc(s, 1);                         // 0 = disable, 1 = enable
+    s->set_raw_gma(s, 1);                     // 0 = disable, 1 = enable
+    s->set_lenc(s, 1);                        // 0 = disable, 1 = enable
+    s->set_hmirror(s, 0);                     // 0 = disable, 1 = enable
+    s->set_vflip(s, 0);                       // 0 = disable, 1 = enable
+    s->set_dcw(s, 1);                         // 0 = disable, 1 = enable
+    s->set_colorbar(s, 0);                    // 0 = disable, 1 = enable
+  }
+}
+
+// ------------------------- Helper Functions -----------------------------
+
+// Write a uint16 big-endian into buf at offset, advance offset
+static inline void write_u16(uint8_t *buf, size_t &off, uint16_t val)
+{
+  buf[off++] = (val >> 8) & 0xFF;
+  buf[off++] = val & 0xFF;
+}
+
+// Write a uint8 into buf at offset, advance offset
+static inline void write_u8(uint8_t *buf, size_t &off, uint8_t val)
+{
+  buf[off++] = val;
+}
+
+static inline bool send_frame(camera_fb_t *fb)
+{
+  if (!Tcp.connected()) return false;
+
+  uint8_t Tcp_Hdr[TCP_FRAME_HDR_SIZE];
+
+  // Build header
+  size_t off = 0;
+  write_u16(Tcp_Hdr, off, Frame_Id);
+  write_u16(Tcp_Hdr, off, (uint32_t) fb->len); // 4B
+  write_u16(Tcp_Hdr, off, (uint16_t) fb->width);
+  write_u16(Tcp_Hdr, off, (uint16_t) fb->height);
+  write_u8 (Tcp_Hdr, off, (uint8_t)  fb->format);
+
+  // Send header
+  if (Tcp.write(Tcp_Hdr, TCP_FRAME_HDR_SIZE) != TCP_FRAME_HDR_SIZE) {
+    Frame_Id++;
+    return false;
+  }
+
+  // Send image data in lwIP-safe chunks
+  const uint8_t *ptr = fb->buf;
+  size_t remaining   = fb->len;
+
+  while (remaining > 0) {
+    size_t chunk = min(remaining, (size_t)5700);
+    size_t sent  = Tcp.write(ptr, chunk);
+    if (sent == 0) {
+      Frame_Id++;
+      return false;
+    }
+    ptr       += sent;
+    remaining -= sent;
+  }
+
+  Frame_Id++;
+  return true;
+}
+
+// ------------------------- Main Cam Capture Logic -----------------------------
+
+#define TCP_CONNECT_TIMEOUT_MS (10000)  // go dummy after 10s of failed connects
+
+inline bool capture_n_upload()
+{
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.print("[E] Lost WiFi, reconnecting...");
+    while (WiFi.status() != WL_CONNECTED) { Serial.print("."); delay(1000); }
+    Serial.printf(" Connected (%s)\n", WiFi.localIP().toString().c_str());
+  }
+
+  if (!Tcp.connected()) {
+    Serial.printf("[I] Connecting TCP to %s:%d...\n", HOST_IP, HOST_TCP_PORT);
+
+    uint32_t deadline = millis() + TCP_CONNECT_TIMEOUT_MS;
+    bool connected = false;
+
+    while (millis() < deadline) {
+      if (Tcp.connect(HOST_IP, HOST_TCP_PORT)) {
+        connected = true;
+        break;
+      }
+      Serial.print(".");
+      delay(500);
+    }
+
+    if (!connected) {
+      Serial.println("\n[E] TCP connect timed out");
+      return false;  // dummy mode
+    }
+
+    Serial.println("[I] TCP connected");
+  }
+
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("[E] Camera capture failed");
+    return true;
+  }
+
+  bool ok = send_frame(fb);
+  esp_camera_fb_return(fb);
+
+  if (!ok) {
+    Serial.printf("[E] Frame %d send failed, dropping TCP connection\n", Frame_Id);
+    Tcp.stop();  // reconnect attempt on next iteration, timeout governs dummy fallback
+  }
+
+  return true;
+}
+
+void setup()
+{
+  init_board();
+  init_serial();
+  init_wifi();
+  init_cam();
+  config_cam();
+}
+
+void loop()
+{
+  static bool capture_or_dummy_mode = true;
+  static uint64_t dummy_counter = 0;
+
+  if (capture_or_dummy_mode) {
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    capture_or_dummy_mode = capture_n_upload();
+    delay(CAPTURE_N_UPLOAD_DELAY_MS);
+  } else {
+    Serial.printf("Seconds Elapsed Counter = %d\n", ++dummy_counter);
+    delay(1000);
+  }
+
+}
