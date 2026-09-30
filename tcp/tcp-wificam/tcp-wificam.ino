@@ -38,10 +38,13 @@ static int    Host_Port = 8080;
 // [frame_id:2B][img_len:4B][img_w:2B][img_h:2B][pixfmt:1B]
 #define TCP_IMGFRAME_HDR_SIZE  (11)
 #define TCP_MAX_CHUNK_SIZE     (1500)
-
 #define TCP_CONNECT_TIMEOUT_MS (10000)
 
-uint16_t Sender_FrameId = 0;
+#define START_FRAME_NO         ((0xFFFF) - 50)
+
+// This wraps around on overflow automatically
+uint16_t Sender_FrameId = START_FRAME_NO;
+
 WiFiClient Tcp;
 
 // --------------------------- Init Procedures ------------------------------

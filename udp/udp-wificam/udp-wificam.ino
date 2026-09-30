@@ -57,7 +57,11 @@ static int Host_Port = 8080;
 #define UDP_FRAG0_IMGDATA_SIZE (UDP_MAX_DATAGRAM_SIZE - UDP_IMGFRAME_HDR_SIZE - UDP_FRAG0META_HDR_SIZE)
 #define UDP_FRAGN_IMGDATA_SIZE (UDP_MAX_DATAGRAM_SIZE - UDP_IMGFRAME_HDR_SIZE)
 
-uint16_t Sender_FrameId = 0;
+#define START_FRAME_NO         ((0xFFFF) - 50)
+
+// This wraps around on overflow automatically
+uint16_t Sender_FrameId = START_FRAME_NO;
+
 WiFiUDP Udp;
 
 // ------------------------- UDP "Flow Control" -----------------------------
