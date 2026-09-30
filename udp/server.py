@@ -6,7 +6,7 @@ import queue
 
 from flask import request
 from flask import Flask
-from flask_socketio import SocketIO
+from flask_sock import Sock
 
 from img_conversions import convert_to_jpeg
 
@@ -19,19 +19,24 @@ MAX_FRAME_BUFFER_SIZE = MAX_FRAME_STORE_SIZE
 MAX_FRAME_QUEUE_SIZE  = MAX_FRAME_STORE_SIZE
 
 # ---------------------------------------------------------------------------
-# UDP protocol constants (must mirror esp32_cam.ino)
+# UDP protocol constants (must mirror udp-wificam.ino): DO NOT TOUCH
 # ---------------------------------------------------------------------------
-UDP_FRAME_HDR    = ">HHH"   # [frame_id:2B][frag_no:2B][total_frags:2B]
-UDP_FRAME_HDR_SZ = struct.calcsize(UDP_FRAME_HDR)   # 6
-UDP_META_HDR     = ">HHB"   # [img_width:2B][img_height:2B][pixformat:1B]
-UDP_META_HDR_SZ  = struct.calcsize(UDP_META_HDR)    # 5
-UDP_MTU          = (1400 + UDP_FRAME_HDR_SZ + UDP_META_HDR_SZ) # 1411
+UDP_IMGFRAME_HDR       = ">HHH" # [frame_id:2B][frag_no:2B][total_frags:2B]
+UDP_IMGFRAME_HDR_SIZE  = struct.calcsize(UDP_IMGFRAME_HDR)  # 6
+UDP_FRAG0META_HDR      = ">HHB" # [img_width:2B][img_height:2B][pixformat:1B]
+UDP_FRAG0META_HDR_SIZE = struct.calcsize(UDP_FRAG0META_HDR) # 5
 
+# Chosen after trial and error
+UDP_MAX_DATAGRAM_SIZE  = 1400
 # UDP payload sizes (mirror C defines)
-UDP_FRAG0_DATA_SIZE = UDP_MTU - UDP_FRAME_HDR_SZ - UDP_META_HDR_SZ # 1400
-UDP_FRAGN_DATA_SIZE = UDP_MTU - UDP_FRAME_HDR_SZ                   # 1405
+UDP_FRAG0_IMGDATA_SIZE = UDP_MAX_DATAGRAM_SIZE - UDP_IMGFRAME_HDR_SIZE - UDP_FRAG0META_HDR_SIZE
+UDP_FRAGN_IMGDATA_SIZE = UDP_MAX_DATAGRAM_SIZE - UDP_IMGFRAME_HDR_SIZE
 
-SERVER_UDP_PORT  = 8080
+# ---------------------------------------------------------------------------
+# Other constants
+# ---------------------------------------------------------------------------
+
+SERVER_UDP_PORT = 8080
 
 # pixformat_t enum (matches esp_camera.h)
 PIXFORMAT = {
@@ -62,7 +67,7 @@ class FrameBuffer:
 
         # Pre-compute total image size and fragment offsets
         # This is not full image size. It is an upper bound based on fragment sizes
-        img_size_ub = UDP_FRAG0_DATA_SIZE + (total_frags - 1) * UDP_FRAGN_DATA_SIZE
+        img_size_ub = UDP_FRAG0_IMGDATA_SIZE + (total_frags - 1) * UDP_FRAGN_IMGDATA_SIZE
         self._buf   = bytearray(img_size_ub)
 
         # actual bytes written, used for trimming
@@ -73,7 +78,7 @@ class FrameBuffer:
         
         self._offsets[0] = 0
         for i in range(1, total_frags):
-            self._offsets[i] = UDP_FRAG0_DATA_SIZE + (i - 1) * UDP_FRAGN_DATA_SIZE
+            self._offsets[i] = UDP_FRAG0_IMGDATA_SIZE + (i - 1) * UDP_FRAGN_IMGDATA_SIZE
 
         self._received_mask = bytearray(total_frags)  # 0/1 per frag, avoid set overhead
 
@@ -113,7 +118,7 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)  # 4 MB kernel buf
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024) # 4 MB kernel buf
     sock.bind(("0.0.0.0", SERVER_UDP_PORT))
     print(f"[I] UDP listener on port {SERVER_UDP_PORT}")
 
@@ -127,7 +132,7 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
 
     while True:
         try:
-            pkt, _ = sock.recvfrom(UDP_MTU)
+            pkt, _ = sock.recvfrom(UDP_MAX_DATAGRAM_SIZE)
         except OSError as e:
             print(f"[E] UDP recv error: {e}")
             continue
@@ -135,21 +140,21 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
         # ---------------------------------------------------------------
         # Parse frame header
         # ---------------------------------------------------------------
-        if len(pkt) < UDP_FRAME_HDR_SZ:
+        if len(pkt) < UDP_IMGFRAME_HDR_SIZE:
             print("[W] Packet too short for frame header, dropping")
             continue
 
-        frame_id, frag_no, total_frags = struct.unpack_from(UDP_FRAME_HDR, pkt, 0)
-        offset = UDP_FRAME_HDR_SZ
+        frame_id, frag_no, total_frags = struct.unpack_from(UDP_IMGFRAME_HDR, pkt, 0)
+        offset = UDP_IMGFRAME_HDR_SIZE
 
         # Parse metadata header (fragment 0 only)
         if frag_no == 0:
-            if len(pkt) < offset + UDP_META_HDR_SZ:
+            if len(pkt) < offset + UDP_FRAG0META_HDR_SIZE:
                 print("[W] Fragment 0 too short for metadata header, dropping")
                 continue
 
-            width, height, pixfmt = struct.unpack_from(UDP_META_HDR, pkt, offset)
-            offset += UDP_META_HDR_SZ
+            width, height, pixfmt = struct.unpack_from(UDP_FRAG0META_HDR, pkt, offset)
+            offset += UDP_FRAG0META_HDR_SIZE
 
             if frame_id not in buffers:
                 buffers[frame_id] = FrameBuffer(frame_id, total_frags, width, height, pixfmt)
@@ -204,8 +209,8 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
 # Flask + SocketIO app
 # ---------------------------------------------------------------------------
 app       = Flask(__name__)
-socketio  = SocketIO(app, cors_allowed_origins="*")
 clients   = set()
+sock      = Sock(app)
 
 
 # Frame Queue
@@ -215,55 +220,67 @@ frame_q: queue.Queue = queue.Queue(maxsize=MAX_FRAME_QUEUE_SIZE)
 
 @app.route("/")
 def index():
-    return """
+    heading = "Live ESP32-CAM Image Stream"
+    image_type = "image/jpeg"
+
+    return f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Live Image Stream</title>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+        <title>{heading}</title>
         <style>
-            body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; }
-            h1 { color: #eee; font-family: sans-serif; margin: 12px 0; }
-            canvas { max-width: 100%; display: block; }
+            body {{ margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; }}
+            h1 {{ color: #eee; font-family: sans-serif; margin: 12px 0; }}
+            canvas {{ max-width: 100%; display: block; }}
         </style>
     </head>
     <body>
-        <h1>Live Image Stream</h1>
+        <h1>{heading}</h1>
         <canvas id="stream"></canvas>
         <script>
-            const socket = io();
             const canvas = document.getElementById('stream');
             const ctx = canvas.getContext('2d');
-            const img = new Image();
 
-            img.onload = () => {
-                if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
-                    canvas.width  = img.naturalWidth;
-                    canvas.height = img.naturalHeight;
-                }
-                ctx.drawImage(img, 0, 0);
-                URL.revokeObjectURL(img.src);   // free memory if using blob, no-op for data URLs
-            };
+            const ws = new WebSocket(`ws://${{location.host}}/ws`);
+            ws.binaryType = 'arraybuffer';
 
-            socket.on('image', (data) => {
-                img.src = 'data:image/jpeg;base64,' + data;
-            });
+            ws.onopen  = ()  => console.log  ('[I] WebSocket connected');
+            ws.onerror = (e) => console.error('[E] WebSocket error', e);
+            ws.onclose = (e) => console.warn ('[W] WebSocket closed', e.code, e.reason);
+
+            // let flag = 0;
+
+            ws.onmessage = (event) => {{
+                // if (flag % 100 == 0) console.log(event);
+                // else if (flag < 51) flag++;
+                createImageBitmap(new Blob([event.data], {{ type: '{image_type}' }}))
+                    .then((bitmap) => {{
+                        canvas.width = bitmap.width;
+                        canvas.height = bitmap.height;
+                        ctx.drawImage(bitmap, 0, 0);
+                        bitmap.close();
+                    }} );
+            }} ;
         </script>
     </body>
     </html>
     """
 
 
-@socketio.on("connect")
-def handle_connect():
-    clients.add(request.sid) # type: ignore
-
-
-@socketio.on("disconnect")
-def handle_disconnect():
-    clients.discard(request.sid) # type: ignore
+@sock.route('/ws')
+def ws_handler(ws):
+    clients.add(ws)
+    print(f"[I] Browser client ({request.remote_addr}) connected")
+    try:
+        while True:
+            ws.receive()  # blocks, keeps connection alive
+    except:
+        pass
+    finally:
+        clients.discard(ws)
+        print(f"[W] Connection to browser client ({request.remote_addr}) lost")
 
 
 def frame_broadcaster() -> None:
@@ -285,9 +302,14 @@ def frame_broadcaster() -> None:
             print(f"[E] convert_to_jpeg: {e}")
             continue
 
-        if clients:
-            encoded = base64.b64encode(jpeg_bytes).decode("utf-8")
-            socketio.emit("image", encoded)
+        dead = set()
+        for ws in list(clients):
+            try:
+                ws.send(jpeg_bytes)
+            except:
+                dead.add(ws)
+        for ws in dead:
+            clients.discard(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -303,4 +325,4 @@ if __name__ == "__main__":
     threading.Thread(target=udp_receiver, args=(frame_q,), daemon=True).start()
     threading.Thread(target=frame_broadcaster, daemon=True).start()
 
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)

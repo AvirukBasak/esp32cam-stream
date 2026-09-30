@@ -6,7 +6,7 @@ import queue
 
 from flask import request
 from flask import Flask
-from flask_socketio import SocketIO
+from flask_sock import Sock
 
 from img_conversions import convert_to_jpeg
 
@@ -14,7 +14,7 @@ from img_conversions import convert_to_jpeg
 # ---------------------------------------------------------------------------
 # Frame storage capacities
 # ---------------------------------------------------------------------------
-MAX_FRAME_STORE_SIZE  = 5
+MAX_FRAME_STORE_SIZE  = 4
 MAX_FRAME_BUFFER_SIZE = MAX_FRAME_STORE_SIZE
 MAX_FRAME_QUEUE_SIZE  = MAX_FRAME_STORE_SIZE
 
@@ -93,8 +93,8 @@ def tcp_receiver(frame_queue: queue.Queue) -> None:
 # Flask + SocketIO app
 # ---------------------------------------------------------------------------
 app       = Flask(__name__)
-socketio  = SocketIO(app, cors_allowed_origins="*")
 clients   = set()
+sock      = Sock(app)
 
 
 # Frame Queue
@@ -104,38 +104,67 @@ frame_q: queue.Queue = queue.Queue(maxsize=MAX_FRAME_QUEUE_SIZE)
 
 @app.route("/")
 def index():
-    return """
+    heading = "Live ESP32-CAM Image Stream"
+    image_type = "image/jpeg"
+
+    return f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Live Image Stream</title>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+        <title>{heading}</title>
+        <style>
+            body {{ margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; }}
+            h1 {{ color: #eee; font-family: sans-serif; margin: 12px 0; }}
+            canvas {{ max-width: 100%; display: block; }}
+        </style>
     </head>
     <body>
-        <h1>Live Image Stream</h1>
-        <img id="live-image" src="" alt="Streaming Image" style="max-width:100%;">
+        <h1>{heading}</h1>
+        <canvas id="stream"></canvas>
         <script>
-            const socket = io();
-            const img = document.getElementById('live-image');
-            socket.on('image', (data) => {
-                img.src = 'data:image/jpeg;base64,' + data;
-            });
+            const canvas = document.getElementById('stream');
+            const ctx = canvas.getContext('2d');
+
+            const ws = new WebSocket(`ws://${{location.host}}/ws`);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen  = ()  => console.log  ('[I] WebSocket connected');
+            ws.onerror = (e) => console.error('[E] WebSocket error', e);
+            ws.onclose = (e) => console.warn ('[W] WebSocket closed', e.code, e.reason);
+
+            // let flag = 0;
+
+            ws.onmessage = (event) => {{
+                // if (flag % 100 == 0) console.log(event);
+                // else if (flag < 51) flag++;
+                createImageBitmap(new Blob([event.data], {{ type: '{image_type}' }}))
+                    .then((bitmap) => {{
+                        canvas.width = bitmap.width;
+                        canvas.height = bitmap.height;
+                        ctx.drawImage(bitmap, 0, 0);
+                        bitmap.close();
+                    }} );
+            }} ;
         </script>
     </body>
     </html>
     """
 
 
-@socketio.on("connect")
-def handle_connect():
-    clients.add(request.sid) # type: ignore
-
-
-@socketio.on("disconnect")
-def handle_disconnect():
-    clients.discard(request.sid) # type: ignore
+@sock.route('/ws')
+def ws_handler(ws):
+    clients.add(ws)
+    print(f"[I] Browser client ({request.remote_addr}) connected")
+    try:
+        while True:
+            ws.receive()  # blocks, keeps connection alive
+    except:
+        pass
+    finally:
+        clients.discard(ws)
+        print(f"[W] Connection to browser client ({request.remote_addr}) lost")
 
 
 def frame_broadcaster() -> None:
@@ -157,9 +186,14 @@ def frame_broadcaster() -> None:
             print(f"[E] convert_to_jpeg: {e}")
             continue
 
-        if clients:
-            encoded = base64.b64encode(jpeg_bytes).decode("utf-8")
-            socketio.emit("image", encoded)
+        dead = set()
+        for ws in list(clients):
+            try:
+                ws.send(jpeg_bytes)
+            except:
+                dead.add(ws)
+        for ws in dead:
+            clients.discard(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -175,4 +209,4 @@ if __name__ == "__main__":
     threading.Thread(target=tcp_receiver, args=(frame_q,), daemon=True).start()
     threading.Thread(target=frame_broadcaster, daemon=True).start()
 
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)

@@ -42,25 +42,20 @@ static String WiFi_SSID;
 static String WiFi_Passwd;
 
 static String Host_IP;
-static int    Host_Port = 8080;
+static int Host_Port = 8080;
 
 // ------------------------- UDP Frame Configs: DON'T TOUCH -----------------------------
 
 // Per-packet framing header: [frame_id:2B][frag_no:2B][total_frags:2B]
-#define UDP_FRAME_HDR_SIZE (6)
-
+#define UDP_IMGFRAME_HDR_SIZE  (6)
 // Extra metadata sent only in fragment 0: [img_width:2B][img_height:2B][pixformat:1B]
-#define UDP_META_HDR_SIZE (5)
+#define UDP_FRAG0META_HDR_SIZE (5)
 
-// UDP protocol constants
-// WiFi sits on Ethernet (MTU=1500), minus IP(20B) + UDP(8B) = 1472B usable per datagram.
-// No IP-level fragmentation this way, safe for all standard APs.
-// Patch: was 1472 — lwIP's WiFiUDP TX buffer caps at 1460, using 1400 + fields
-#define UDP_MTU (1400 + UDP_FRAME_HDR_SIZE + UDP_META_HDR_SIZE)  // 1411
-
+// Chosen after trial and error
+#define UDP_MAX_DATAGRAM_SIZE  (1400)
 // Usable image bytes per fragment
-#define UDP_FRAG0_IMGDATA_SIZE (UDP_MTU - UDP_FRAME_HDR_SIZE - UDP_META_HDR_SIZE)  // 1400
-#define UDP_FRAGN_IMGDATA_SIZE (UDP_MTU - UDP_FRAME_HDR_SIZE)                      // 1405
+#define UDP_FRAG0_IMGDATA_SIZE (UDP_MAX_DATAGRAM_SIZE - UDP_IMGFRAME_HDR_SIZE - UDP_FRAG0META_HDR_SIZE)
+#define UDP_FRAGN_IMGDATA_SIZE (UDP_MAX_DATAGRAM_SIZE - UDP_IMGFRAME_HDR_SIZE)
 
 uint16_t Sender_FrameId = 0;
 WiFiUDP Udp;
@@ -151,6 +146,10 @@ inline bool init_userinput() {
           Host_Port   = prefs.getInt   ("host_port",  0);
           prefs.end();
           Serial.println("[I] Loaded config from preferences");
+          Serial.printf ("[I] WiFi SSID:     %s\n", WiFi_SSID.c_str());
+          Serial.printf ("[I] WiFi Password: %s\n", WiFi_Passwd.c_str());
+          Serial.printf ("[I] Host IP:       %s\n", Host_IP.c_str());
+          Serial.printf ("[I] Host Port:     %d\n", Host_Port);
           break;
       } else if (choice == "N" || choice == "n") {
           take_input();
@@ -280,8 +279,17 @@ inline void config_cam()
     s->set_wpc(s, 1);                         // 0 = disable, 1 = enable
     s->set_raw_gma(s, 1);                     // 0 = disable, 1 = enable
     s->set_lenc(s, 1);                        // 0 = disable, 1 = enable
-    s->set_hmirror(s, 0);                     // 0 = disable, 1 = enable
     s->set_vflip(s, 0);                       // 0 = disable, 1 = enable
+    s->set_hmirror(s, 1);                     // 0 = disable, 1 = enable
+    {
+      // Horizontal mirror - direct register write (bypasses the buggy abstraction)
+      s->set_reg(s, 0xFF, 0xFF, 0x01);  // switch to sensor register bank
+      s->set_reg(s, 0x04, 0x80, 0x80);  // set mirror bit
+      // Horizontal mirror - direct register write (alternative method)
+      // s->set_reg(s, 0xFF, 0xFF, 0x01);         // sensor bank
+      // uint8_t val = s->get_reg(s, 0x04, 0xFF); // read current value of reg 0x04
+      // s->set_reg(s, 0x04, 0xFF, val | 0x80);   // set bit 7 (mirror)
+    }
     s->set_dcw(s, 1);                         // 0 = disable, 1 = enable
     s->set_colorbar(s, 0);                    // 0 = disable, 1 = enable
   }
@@ -302,14 +310,14 @@ static inline void write_u8(uint8_t *buf, size_t &frag_off, uint8_t val)
   buf[frag_off++] = val;
 }
 
-static inline bool send_fragment(
+static inline bool send_imgframe_fragment(
   uint16_t frame_id, uint16_t frag_no,  uint16_t total_frags,
   size_t   img_len,  uint16_t img_w,    uint16_t img_h,
   uint8_t  img_fmt,  size_t   &img_off, const uint8_t *img_data
 ) {
 
   // Scratch buffer sized for one full UDP datagram
-  static uint8_t Udp_Buf[UDP_MTU];
+  static uint8_t Udp_Buf[UDP_MAX_DATAGRAM_SIZE];
   size_t frag_off = 0;
 
   // --- Frame header (all fragments) ---
@@ -327,7 +335,7 @@ static inline bool send_fragment(
   }
 
   // --- Image data payload ---
-  size_t data_capacity = UDP_MTU - frag_off;
+  size_t data_capacity = UDP_MAX_DATAGRAM_SIZE - frag_off;
   size_t data_len      = min(data_capacity, img_len - img_off);
 
   memcpy(Udp_Buf + frag_off, img_data + img_off, data_len);
@@ -342,7 +350,7 @@ static inline bool send_fragment(
   return udp_ok && (sent == frag_off);
 }
 
-static inline bool send_frame(camera_fb_t *fb)
+static inline bool send_imgframe(camera_fb_t *fb)
 {
   bool return_val = false;
 
@@ -374,10 +382,10 @@ send_frame_retry_fragment:
 
     if (Sender_InterFragmentDelay) delay(Sender_InterFragmentDelay);
 
-    frag_ok = send_fragment(
+    frag_ok = send_imgframe_fragment(
       Sender_FrameId, frag_no, total_frags,
-      img_len,  img_w,   img_h,
-      img_fmt,  img_off, img_data
+      img_len,        img_w,   img_h,
+      img_fmt,        img_off, img_data
     );
 
     // taskYIELD(); // just yield to lwIP task, no fixed sleep
@@ -433,7 +441,7 @@ send_frame_next_fragment:
 
 send_frame_next_frame:
   // Wraps at 65535 → 0, receiver handles it
-  // Serial.printf("[I] send_frame(%d): frags: %d/%d, success?: %d\n", Frame_Id, frag_no, total_frags, return_val);
+  // Serial.printf("[I] send_imgframe(%d): frags: %d/%d, success?: %d\n", Frame_Id, frag_no, total_frags, return_val);
   Sender_FrameId++;
   return return_val;
 }
@@ -454,7 +462,7 @@ inline bool capture_n_upload()
 
   // Send the frame
   if (DELAY_SEND_FRAME_MS) delay(DELAY_SEND_FRAME_MS);
-  bool frame_ok = send_frame(fb);
+  bool frame_ok = send_imgframe(fb);
   // Return the frame buffer to be reused
   esp_camera_fb_return(fb);
 

@@ -14,41 +14,34 @@
 
 // ------------------------- Customizable Configurations -----------------------------
 
-#define SERIAL_BAUD_RATE               (115200)
-
-#define WIFI_SSID                      ("SamSung")
-#define WIFI_PASSWD                    ("12345678")
 #define WIFI_CONNECT_TIMEOUT_MS        (10000)
 
-#define HOST_IP                        ("10.67.91.119")
-#define HOST_TCP_PORT                  (8080)
-
-#define CAPTURE_N_UPLOAD_DELAY_MS      (50)
+#define DELAY_CAPTURE_FRAME_MS         (5)
+#define DELAY_SEND_FRAME_MS            (5)
 
 #define CAM_PIXEL_FORMAT               (PIXFORMAT_GRAYSCALE)
 #define CAM_FRAMESIZE                  (FRAMESIZE_HVGA)
 #define CAM_JPEG_QUALITY               (60)
-#define CAM_FRAME_BUFFERS              (2)
+#define CAM_FRAME_BUFFERS              (3)
 #define CAM_XCLK_FREQ                  (20'000'000)
+
+// ---------------------------------- Input By User -------------------------------------
+
+static String WiFi_SSID;
+static String WiFi_Passwd;
+
+static String Host_IP;
+static int    Host_Port = 8080;
 
 // ------------------------- TCP Configs: DON'T TOUCH -----------------------------
 
-// ESP32 lwIP send buffer default (~5744 bytes). So, we should avoid writing full image buffer
-// in one shot. We can write anything under this (like 4096). However, TCP will apply segmentation
-// on top of that coz Ethernet MTU is 1500 bytes. To stop TCP from segmenting by itself, we can set
-// chunk size to just 1500 B - (60B IP_HDR and 60B MAX_TCP_HDR).
-
-#define ETHERNET_MTU           (1500)
-#define IP_HDR_MAX_SZ          (60)
-#define TCP_HDR_MAX_SZ         (60)
-#define TCP_WRITE_CHUNK_SIZE   (ETHERNET_MTU - IP_HDR_MAX_SZ - TCP_HDR_MAX_SZ)
+// [frame_id:2B][img_len:4B][img_w:2B][img_h:2B][pixfmt:1B]
+#define TCP_IMGFRAME_HDR_SIZE  (11)
+#define TCP_MAX_CHUNK_SIZE     (1500)
 
 #define TCP_CONNECT_TIMEOUT_MS (10000)
 
-// [frame_id:2B][img_len:4B][img_w:2B][img_h:2B][pixfmt:1B] = 11 bytes
-#define TCP_FRAME_HDR_SIZE (11)
-
-uint16_t Frame_Id = 0;
+uint16_t Sender_FrameId = 0;
 WiFiClient Tcp;
 
 // --------------------------- Init Procedures ------------------------------
@@ -222,8 +215,17 @@ inline void config_cam()
     s->set_wpc(s, 1);                         // 0 = disable, 1 = enable
     s->set_raw_gma(s, 1);                     // 0 = disable, 1 = enable
     s->set_lenc(s, 1);                        // 0 = disable, 1 = enable
-    s->set_hmirror(s, 0);                     // 0 = disable, 1 = enable
     s->set_vflip(s, 0);                       // 0 = disable, 1 = enable
+    s->set_hmirror(s, 1);                     // 0 = disable, 1 = enable
+    {
+      // Horizontal mirror - direct register write (bypasses the buggy abstraction)
+      s->set_reg(s, 0xFF, 0xFF, 0x01);  // switch to sensor register bank
+      s->set_reg(s, 0x04, 0x80, 0x80);  // set mirror bit
+      // Horizontal mirror - direct register write (alternative method)
+      // s->set_reg(s, 0xFF, 0xFF, 0x01);         // sensor bank
+      // uint8_t val = s->get_reg(s, 0x04, 0xFF); // read current value of reg 0x04
+      // s->set_reg(s, 0x04, 0xFF, val | 0x80);   // set bit 7 (mirror)
+    }
     s->set_dcw(s, 1);                         // 0 = disable, 1 = enable
     s->set_colorbar(s, 0);                    // 0 = disable, 1 = enable
   }
@@ -248,19 +250,19 @@ static inline bool send_frame(camera_fb_t *fb)
 {
   if (!Tcp.connected()) return false;
 
-  uint8_t Tcp_Hdr[TCP_FRAME_HDR_SIZE];
+  uint8_t Tcp_Hdr[TCP_IMGFRAME_HDR_SIZE];
 
   // Build header
   size_t off = 0;
-  write_u16(Tcp_Hdr, off, Frame_Id);              // 2B
+  write_u16(Tcp_Hdr, off, Sender_FrameId);              // 2B
   write_u16(Tcp_Hdr, off, (uint32_t) fb->len);    // 4B
   write_u16(Tcp_Hdr, off, (uint16_t) fb->width);  // 2B
   write_u16(Tcp_Hdr, off, (uint16_t) fb->height); // 2B
   write_u8 (Tcp_Hdr, off, (uint8_t)  fb->format); // 1B
 
   // Send header
-  if (Tcp.write(Tcp_Hdr, TCP_FRAME_HDR_SIZE) != TCP_FRAME_HDR_SIZE) {
-    Frame_Id++;
+  if (Tcp.write(Tcp_Hdr, TCP_IMGFRAME_HDR_SIZE) != TCP_IMGFRAME_HDR_SIZE) {
+    Sender_FrameId++;
     return false;
   }
 
@@ -269,17 +271,17 @@ static inline bool send_frame(camera_fb_t *fb)
   size_t remaining   = fb->len;
 
   while (remaining > 0) {
-    size_t write_size = min(remaining, (size_t) TCP_WRITE_CHUNK_SIZE);
+    size_t write_size = min(remaining, (size_t) TCP_MAX_CHUNK_SIZE);
     size_t sent  = Tcp.write(ptr, write_size);
     if (sent == 0) {
-      Frame_Id++;
+      Sender_FrameId++;
       return false;
     }
     ptr       += sent;
     remaining -= sent;
   }
 
-  Frame_Id++;
+  Sender_FrameId++;
   return true;
 }
 
@@ -300,7 +302,7 @@ inline bool capture_n_upload()
   esp_camera_fb_return(fb);
 
   if (!frame_ok) {
-    Serial.printf("[E] Frame %d send failed, dropping TCP connection\n", Frame_Id);
+    Serial.printf("[E] Frame %d send failed, dropping TCP connection\n", Sender_FrameId);
     Tcp.stop(); // reconnect attempt on next iteration, timeout governs dummy fallback
   }
 
