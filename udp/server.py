@@ -180,11 +180,11 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
 
         if buf.add_fragment(frag_no, memoryview(pkt)[offset:]):
             raw = buf.assemble()
-            expected_size = buf.width * buf.height
-            if len(raw) != expected_size:
-                print(f"[W] Frame {frame_id} size mismatch: {len(raw)} != {expected_size}, dropping")
-                del buffers[frame_id]
-                continue
+            # expected_size = buf.width * buf.height
+            # if len(raw) != expected_size:
+            #     print(f"[W] Frame {frame_id} size mismatch: {len(raw)} != {expected_size}, dropping")
+            #     del buffers[frame_id]
+            #     continue
             try:
                 frame_queue.put_nowait((buf.width, buf.height, buf.pixfmt, raw))
             except queue.Full:
