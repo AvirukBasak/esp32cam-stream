@@ -223,13 +223,30 @@ def index():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Live Image Stream</title>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+        <style>
+            body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; }
+            h1 { color: #eee; font-family: sans-serif; margin: 12px 0; }
+            canvas { max-width: 100%; display: block; }
+        </style>
     </head>
     <body>
         <h1>Live Image Stream</h1>
-        <img id="live-image" src="" alt="Streaming Image" style="max-width:100%;">
+        <canvas id="stream"></canvas>
         <script>
             const socket = io();
-            const img = document.getElementById('live-image');
+            const canvas = document.getElementById('stream');
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+
+            img.onload = () => {
+                if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+                    canvas.width  = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                }
+                ctx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(img.src);   // free memory if using blob, no-op for data URLs
+            };
+
             socket.on('image', (data) => {
                 img.src = 'data:image/jpeg;base64,' + data;
             });

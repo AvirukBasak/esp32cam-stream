@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <WiFiUdp.h>
+#include <Preferences.h>
 
 #include "esp_wifi.h"
 
@@ -18,12 +19,7 @@
 
 // ------------------------- Customizable Configurations -----------------------------
 
-#define WIFI_SSID                      ("SamSung")
-#define WIFI_PASSWD                    ("12345678")
 #define WIFI_CONNECT_TIMEOUT_MS        (10000)
-
-#define HOST_IP                        ("10.67.91.119")
-#define HOST_UDP_PORT                  (8080)
 
 #define DELAY_CAPTURE_FRAME_MS         (5)
 #define DELAY_SEND_FRAME_MS            (5)
@@ -33,12 +29,20 @@
 #define CAM_PIXEL_FORMAT               (PIXFORMAT_GRAYSCALE)
 #define CAM_FRAMESIZE                  (FRAMESIZE_HVGA)
 #define CAM_JPEG_QUALITY               (60)
-#define CAM_FRAME_BUFFERS              (2)
+#define CAM_FRAME_BUFFERS              (3)
 #define CAM_XCLK_FREQ                  (20'000'000)
 
 #define SENDER_FRAME_SEND_FAIL_THRSHLD (512)
 #define SENDER_FRAG_RETRY_FLAG         (true)
 #define SENDER_RETRY_FRAG_THRSHLD      (16)
+
+// ---------------------------------- Input By User -------------------------------------
+
+static String WiFi_SSID;
+static String WiFi_Passwd;
+
+static String Host_IP;
+static int    Host_Port = 8080;
 
 // ------------------------- UDP Frame Configs: DON'T TOUCH -----------------------------
 
@@ -84,6 +88,68 @@ inline void init_serial()
   Serial.println("[I] ESP32-CAM Image Capture and Upload");
 }
 
+inline bool init_userinput() {
+    while (!Serial);
+
+    auto prompt = [](const char* label) -> String {
+        Serial.print(label);
+        while (!Serial.available());
+        String val = Serial.readStringUntil('\n');
+        val.trim();
+        Serial.println(val);
+        return val;
+    };
+
+    String dummy = prompt("Activate dummy mode? (y/N): ");
+    if (dummy == "Y" || dummy == "y") {
+      return false;
+    }
+
+    auto take_input = [&]() {
+        WiFi_SSID   = prompt("WiFi SSID:     ");
+        WiFi_Passwd = prompt("WiFi Password: ");
+        Host_IP     = prompt("Host IP:       ");
+        Host_Port   = prompt("Host Port:     ").toInt();
+
+        Preferences prefs;
+        prefs.begin("config", false);
+        prefs.putBool  ("exists",    true);
+        prefs.putString("ssid",      WiFi_SSID);
+        prefs.putString("passwd",    WiFi_Passwd);
+        prefs.putString("host_ip",   Host_IP);
+        prefs.putInt   ("host_port", Host_Port);
+        prefs.end();
+
+        Serial.println("[I] Configured from user input");
+    };
+
+    Preferences prefs;
+    prefs.begin("config", true);
+    bool exists = prefs.getBool("exists", false);
+    prefs.end();
+
+    if (!exists) {
+        Serial.println("[I] No saved config found, enter details:");
+        take_input();
+        return true;
+    }
+
+    String choice = prompt("Load from preferences? (Y/n): ");
+    if (choice.length() == 0 || choice == "Y" || choice == "y") {
+        prefs.begin("config", true);
+        WiFi_SSID   = prefs.getString("ssid",      "");
+        WiFi_Passwd = prefs.getString("passwd",    "");
+        Host_IP     = prefs.getString("host_ip",   "");
+        Host_Port   = prefs.getInt   ("host_port",  0);
+        prefs.end();
+        Serial.println("[I] Loaded config from preferences");
+    } else {
+        take_input();
+    }
+
+    return true;
+}
+
 bool wifi_connect(bool reconnect = false) {
   if (WiFi.status() == WL_CONNECTED) return true;
 
@@ -113,7 +179,7 @@ bool wifi_connect(bool reconnect = false) {
 
 inline bool init_wifi()
 {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWD);
+  WiFi.begin(WiFi_SSID, WiFi_Passwd);
   bool wifi_ok = wifi_connect();
   WiFi.setSleep(false);
   return wifi_ok;
@@ -258,7 +324,7 @@ static inline bool send_fragment(
   frag_off += data_len;
 
   // Send the datagram
-  Udp.beginPacket(HOST_IP, HOST_UDP_PORT);
+  Udp.beginPacket(Host_IP.c_str(), Host_Port);
   size_t sent = Udp.write(Udp_Buf, frag_off);
 
   bool udp_ok = Udp.endPacket();
@@ -410,7 +476,8 @@ void setup()
 {
   init_board();
   init_serial();
-  bool wifi_ok = init_wifi();
+  bool not_dummy = init_userinput();
+  bool wifi_ok   = not_dummy && init_wifi();
   if (wifi_ok) {
     enable_camera = true;
     // configure camera
