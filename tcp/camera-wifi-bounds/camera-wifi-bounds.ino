@@ -14,9 +14,13 @@
 
 // ------------------------- Customizable Configurations -----------------------------
 
+#define SERIAL_BAUD_RATE               (115200)
+
 #define WIFI_SSID                      ("SamSung")
 #define WIFI_PASSWD                    ("12345678")
-#define HOST_IP                        ("10.130.207.119")
+#define WIFI_CONNECT_TIMEOUT_MS        (10000)
+
+#define HOST_IP                        ("10.67.91.119")
 #define HOST_TCP_PORT                  (8080)
 
 #define CAPTURE_N_UPLOAD_DELAY_MS      (50)
@@ -27,7 +31,17 @@
 #define CAM_FRAME_BUFFERS              (2)
 #define CAM_XCLK_FREQ                  (20'000'000)
 
-// ------------------------- UDP Frame Configs: DON'T TOUCH -----------------------------
+// ------------------------- TCP Configs: DON'T TOUCH -----------------------------
+
+// ESP32 lwIP send buffer default (~5744 bytes). So, we should avoid writing full image buffer
+// in one shot. We can write anything under this (like 4096). However, TCP will apply segmentation
+// on top of that coz Ethernet MTU is 1500 bytes. To stop TCP from segmenting by itself, we can set
+// chunk size to just 1500 B - (60B IP_HDR and 60B MAX_TCP_HDR).
+
+#define ETHERNET_MTU           (1500)
+#define IP_HDR_MAX_SZ          (60)
+#define TCP_HDR_MAX_SZ         (60)
+#define TCP_WRITE_CHUNK_SIZE   (ETHERNET_MTU - IP_HDR_MAX_SZ - TCP_HDR_MAX_SZ)
 
 #define TCP_CONNECT_TIMEOUT_MS (10000)
 
@@ -39,6 +53,8 @@ WiFiClient Tcp;
 
 // --------------------------- Init Procedures ------------------------------
 
+static bool enable_camera = false; // true is capture mode
+
 inline void init_board()
 {
   setCpuFrequencyMhz(240);
@@ -48,20 +64,78 @@ inline void init_board()
 
 inline void init_serial()
 {
-  Serial.begin(115200);
-  Serial.println("[I] ESP32-CAM Image Capture and Upload");
+  Serial.begin(SERIAL_BAUD_RATE);
+  Serial.printf("[I] ESP32-CAM Image Capture and Upload (baud %d)\n", SERIAL_BAUD_RATE);
 }
 
-inline void init_wifi()
-{
-  WiFi.begin(WIFI_SSID, WIFI_PASSWD);
-  Serial.print("[I] Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
+bool wifi_connect(bool reconnect = false) {
+  if (WiFi.status() == WL_CONNECTED) return true;
+
+  if (reconnect) Serial.print("[E] Lost WiFi, reconnecting...");
+  else           Serial.print("[I] Conntecting to WiFi...");
+
+  uint32_t deadline = millis() + WIFI_CONNECT_TIMEOUT_MS;
+  bool connected = false;
+
+  while (millis() < deadline) {
+    if (WiFi.status() == WL_CONNECTED) {
+      connected = true;
+      break;
+    }
     Serial.print(".");
     delay(1000);
   }
+
+  if (!connected) {
+    Serial.println("\n[E] WiFi connect timed out");
+    return false; // dummy mode
+  }
+
   Serial.printf(" Connected (%s)\n", WiFi.localIP().toString().c_str());
+  return true;
+}
+
+bool tcp_connect(bool reconnect = false) {
+  if (Tcp.connected()) return true;
+
+  if (reconnect) Serial.print ("[E] Lost TCP, reconnecting...");
+  else           Serial.printf("[I] Connecting TCP to %s:%d...", HOST_IP, HOST_TCP_PORT);
+
+  uint32_t deadline = millis() + TCP_CONNECT_TIMEOUT_MS;
+  bool connected = false;
+
+  while (millis() < deadline) {
+    if (Tcp.connect(HOST_IP, HOST_TCP_PORT)) {
+      connected = true;
+      break;
+    }
+    Serial.print(".");
+    delay(1000);
+  }
+
+  if (!connected) {
+    Serial.println("\n[E] TCP connect timed out");
+    return false; // dummy mode
+  }
+
+  Serial.println(" TCP connected");
+  return true;
+}
+
+inline bool init_wifi()
+{
+  WiFi.begin(WIFI_SSID, WIFI_PASSWD);
+  bool wifi_ok = wifi_connect();
   WiFi.setSleep(false);
+  return wifi_ok;
+}
+
+inline bool init_tcp(bool wifi_ok) {
+  if (!wifi_ok) {
+    Serial.println("[E] No WiFi, cannot create TCP connection");
+    return false;
+  }
+  return tcp_connect();
 }
 
 inline void init_cam()
@@ -178,11 +252,11 @@ static inline bool send_frame(camera_fb_t *fb)
 
   // Build header
   size_t off = 0;
-  write_u16(Tcp_Hdr, off, Frame_Id);
-  write_u16(Tcp_Hdr, off, (uint32_t) fb->len); // 4B
-  write_u16(Tcp_Hdr, off, (uint16_t) fb->width);
-  write_u16(Tcp_Hdr, off, (uint16_t) fb->height);
-  write_u8 (Tcp_Hdr, off, (uint8_t)  fb->format);
+  write_u16(Tcp_Hdr, off, Frame_Id);              // 2B
+  write_u16(Tcp_Hdr, off, (uint32_t) fb->len);    // 4B
+  write_u16(Tcp_Hdr, off, (uint16_t) fb->width);  // 2B
+  write_u16(Tcp_Hdr, off, (uint16_t) fb->height); // 2B
+  write_u8 (Tcp_Hdr, off, (uint8_t)  fb->format); // 1B
 
   // Send header
   if (Tcp.write(Tcp_Hdr, TCP_FRAME_HDR_SIZE) != TCP_FRAME_HDR_SIZE) {
@@ -195,8 +269,8 @@ static inline bool send_frame(camera_fb_t *fb)
   size_t remaining   = fb->len;
 
   while (remaining > 0) {
-    size_t chunk = min(remaining, (size_t)5700);
-    size_t sent  = Tcp.write(ptr, chunk);
+    size_t write_size = min(remaining, (size_t) TCP_WRITE_CHUNK_SIZE);
+    size_t sent  = Tcp.write(ptr, write_size);
     if (sent == 0) {
       Frame_Id++;
       return false;
@@ -211,38 +285,10 @@ static inline bool send_frame(camera_fb_t *fb)
 
 // ------------------------- Main Cam Capture Logic -----------------------------
 
-#define TCP_CONNECT_TIMEOUT_MS (10000)  // go dummy after 10s of failed connects
-
 inline bool capture_n_upload()
 {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.print("[E] Lost WiFi, reconnecting...");
-    while (WiFi.status() != WL_CONNECTED) { Serial.print("."); delay(1000); }
-    Serial.printf(" Connected (%s)\n", WiFi.localIP().toString().c_str());
-  }
-
-  if (!Tcp.connected()) {
-    Serial.printf("[I] Connecting TCP to %s:%d...\n", HOST_IP, HOST_TCP_PORT);
-
-    uint32_t deadline = millis() + TCP_CONNECT_TIMEOUT_MS;
-    bool connected = false;
-
-    while (millis() < deadline) {
-      if (Tcp.connect(HOST_IP, HOST_TCP_PORT)) {
-        connected = true;
-        break;
-      }
-      Serial.print(".");
-      delay(500);
-    }
-
-    if (!connected) {
-      Serial.println("\n[E] TCP connect timed out");
-      return false;  // dummy mode
-    }
-
-    Serial.println("[I] TCP connected");
-  }
+  if (!wifi_connect(true)) return false;
+  if (!tcp_connect(true))  return false;
 
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
@@ -250,12 +296,12 @@ inline bool capture_n_upload()
     return true;
   }
 
-  bool ok = send_frame(fb);
+  bool frame_ok = send_frame(fb);
   esp_camera_fb_return(fb);
 
-  if (!ok) {
+  if (!frame_ok) {
     Serial.printf("[E] Frame %d send failed, dropping TCP connection\n", Frame_Id);
-    Tcp.stop();  // reconnect attempt on next iteration, timeout governs dummy fallback
+    Tcp.stop(); // reconnect attempt on next iteration, timeout governs dummy fallback
   }
 
   return true;
@@ -265,19 +311,25 @@ void setup()
 {
   init_board();
   init_serial();
-  init_wifi();
-  init_cam();
-  config_cam();
+  bool wifi_ok = init_wifi();
+  bool tcp_ok  = init_tcp(wifi_ok);
+  if (wifi_ok && tcp_ok) {
+    enable_camera = true;
+    // configure camera
+    init_cam();
+    config_cam();
+  } else {
+    enable_camera = false;
+  }
 }
 
 void loop()
 {
-  static bool capture_or_dummy_mode = true;
   static uint64_t dummy_counter = 0;
 
-  if (capture_or_dummy_mode) {
+  if (enable_camera) {
     esp_wifi_set_ps(WIFI_PS_NONE);
-    capture_or_dummy_mode = capture_n_upload();
+    enable_camera = capture_n_upload();
     delay(CAPTURE_N_UPLOAD_DELAY_MS);
   } else {
     Serial.printf("Seconds Elapsed Counter = %d\n", ++dummy_counter);

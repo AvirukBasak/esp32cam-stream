@@ -14,7 +14,7 @@ from img_conversions import convert_to_jpeg
 # ---------------------------------------------------------------------------
 # Frame storage capacities
 # ---------------------------------------------------------------------------
-MAX_FRAME_STORE_SIZE  = 5
+MAX_FRAME_STORE_SIZE  = 4
 MAX_FRAME_BUFFER_SIZE = MAX_FRAME_STORE_SIZE
 MAX_FRAME_QUEUE_SIZE  = MAX_FRAME_STORE_SIZE
 
@@ -63,7 +63,7 @@ class FrameBuffer:
         # Pre-compute total image size and fragment offsets
         # This is not full image size. It is an upper bound based on fragment sizes
         img_size_ub = UDP_FRAG0_DATA_SIZE + (total_frags - 1) * UDP_FRAGN_DATA_SIZE
-        self._buf     = bytearray(img_size_ub)
+        self._buf   = bytearray(img_size_ub)
 
         # actual bytes written, used for trimming
         self._written = 0
@@ -81,6 +81,7 @@ class FrameBuffer:
     def add_fragment(self, frag_no: int, data: bytes) -> bool:
         if self._received_mask[frag_no]:
             return False # duplicate
+
         self._received_mask[frag_no] = 1
 
         off = self._offsets[frag_no]
@@ -120,7 +121,9 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
     # avoid unbounded growth if a frame is never completed due to packet loss)
     buffers: dict[int, FrameBuffer] = {}
 
-    pending: dict[int, dict[int, memoryview]] = {}
+    # pending: dict[int, dict[int, memoryview]] = {}
+
+    prev_frame_id = -1
 
     while True:
         try:
@@ -156,20 +159,32 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
                 del buffers[min(buffers)]
 
         # Store fragment data
+        # if frame_id not in buffers:
+        #     # Non-zero fragment arrived before frag 0 — park it
+        #     pending.setdefault(frame_id, {})[frag_no] = memoryview(pkt)[offset:]
+        #     continue
+
         if frame_id not in buffers:
-            # Non-zero fragment arrived before frag 0 — park it
-            pending.setdefault(frame_id, {})[frag_no] = memoryview(pkt)[offset:]
+            # skip frame if first fragment is not frag 0
+            if frame_id > prev_frame_id:
+                print(f"[W] Missing fragment 0, dropped frame {frame_id}")
+            prev_frame_id = frame_id
             continue
 
         buf = buffers[frame_id]
 
         # Replay any parked fragments now that we have the buffer
-        if frame_id in pending:
-            for parked_frag_no, parked_data in pending.pop(frame_id).items():
-                buf.add_fragment(parked_frag_no, parked_data)
+        # if frame_id in pending:
+        #     for parked_frag_no, parked_data in pending.pop(frame_id).items():
+        #         buf.add_fragment(parked_frag_no, parked_data)
 
         if buf.add_fragment(frag_no, memoryview(pkt)[offset:]):
             raw = buf.assemble()
+            expected_size = buf.width * buf.height
+            if len(raw) != expected_size:
+                print(f"[W] Frame {frame_id} size mismatch: {len(raw)} != {expected_size}, dropping")
+                del buffers[frame_id]
+                continue
             try:
                 frame_queue.put_nowait((buf.width, buf.height, buf.pixfmt, raw))
             except queue.Full:
@@ -181,8 +196,8 @@ def udp_receiver(frame_queue: queue.Queue) -> None:
             del buffers[frame_id]
 
         # Evict stale pending too
-        if len(pending) > MAX_FRAME_BUFFER_SIZE:
-            del pending[min(pending)]
+        # if len(pending) > MAX_FRAME_BUFFER_SIZE:
+        #     del pending[min(pending)]
 
 
 # ---------------------------------------------------------------------------
