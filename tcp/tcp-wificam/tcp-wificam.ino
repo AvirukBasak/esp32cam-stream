@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <Wire.h>
+#include <Preferences.h>
 
 #include "esp_wifi.h"
 
@@ -12,7 +13,12 @@
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 // ------------------------- Customizable Configurations -----------------------------
+
+#define SERIAL_BAUD_RATE               (115200)
 
 #define WIFI_CONNECT_TIMEOUT_MS        (10000)
 
@@ -31,7 +37,7 @@ static String WiFi_SSID;
 static String WiFi_Passwd;
 
 static String Host_IP;
-static int    Host_Port = 8080;
+static int Host_Port = 8080;
 
 // ------------------------- TCP Configs: DON'T TOUCH -----------------------------
 
@@ -62,6 +68,83 @@ inline void init_serial()
 {
   Serial.begin(SERIAL_BAUD_RATE);
   Serial.printf("[I] ESP32-CAM Image Capture and Upload (baud %d)\n", SERIAL_BAUD_RATE);
+}
+
+inline bool init_userinput() {
+    while (!Serial);
+
+    auto prompt = [](const char* label) -> String {
+        Serial.print(label);
+        while (!Serial.available());
+        String val = Serial.readStringUntil('\n');
+        val.trim();
+        Serial.println(val);
+        return val;
+    };
+
+    String enable_camera;
+    do {
+      enable_camera = prompt("Enable camera? (y/n): ");
+      if (enable_camera == "N" || enable_camera == "n") {
+        return false;
+      }
+      if (enable_camera == "Y" || enable_camera == "y") {
+        break;
+      }
+    } while (true);
+
+    auto take_input = [&]() {
+        WiFi_SSID   = prompt("WiFi SSID:     ");
+        WiFi_Passwd = prompt("WiFi Password: ");
+        Host_IP     = prompt("Host IP:       ");
+        Host_Port   = prompt("Host Port:     ").toInt();
+
+        Preferences prefs;
+        prefs.begin("config", false);
+        prefs.putBool  ("exists",    true);
+        prefs.putString("ssid",      WiFi_SSID);
+        prefs.putString("passwd",    WiFi_Passwd);
+        prefs.putString("host_ip",   Host_IP);
+        prefs.putInt   ("host_port", Host_Port);
+        prefs.end();
+
+        Serial.println("[I] Configured from user input");
+    };
+
+    Preferences prefs;
+    prefs.begin("config", true);
+    bool exists = prefs.getBool("exists", false);
+    prefs.end();
+
+    if (!exists) {
+        Serial.println("[I] No saved config found, enter details:");
+        take_input();
+        return true;
+    }
+
+    String choice;
+    do {
+      choice = prompt("Load from preferences? (y/n): ");
+      if (choice == "Y" || choice == "y") {
+          prefs.begin("config", true);
+          WiFi_SSID   = prefs.getString("ssid",      "");
+          WiFi_Passwd = prefs.getString("passwd",    "");
+          Host_IP     = prefs.getString("host_ip",   "");
+          Host_Port   = prefs.getInt   ("host_port",  0);
+          prefs.end();
+          Serial.println("[I] Loaded config from preferences");
+          Serial.printf ("[I] WiFi SSID:     %s\n", WiFi_SSID.c_str());
+          Serial.printf ("[I] WiFi Password: %s\n", WiFi_Passwd.c_str());
+          Serial.printf ("[I] Host IP:       %s\n", Host_IP.c_str());
+          Serial.printf ("[I] Host Port:     %d\n", Host_Port);
+          break;
+      } else if (choice == "N" || choice == "n") {
+          take_input();
+          break;
+      }
+    } while (true);
+
+    return true;
 }
 
 bool wifi_connect(bool reconnect = false) {
@@ -95,13 +178,13 @@ bool tcp_connect(bool reconnect = false) {
   if (Tcp.connected()) return true;
 
   if (reconnect) Serial.print ("[E] Lost TCP, reconnecting...");
-  else           Serial.printf("[I] Connecting TCP to %s:%d...", HOST_IP, HOST_TCP_PORT);
+  else           Serial.printf("[I] Connecting TCP to %s:%d...", Host_IP, Host_Port);
 
   uint32_t deadline = millis() + TCP_CONNECT_TIMEOUT_MS;
   bool connected = false;
 
   while (millis() < deadline) {
-    if (Tcp.connect(HOST_IP, HOST_TCP_PORT)) {
+    if (Tcp.connect(Host_IP.c_str(), Host_Port)) {
       connected = true;
       break;
     }
@@ -120,7 +203,7 @@ bool tcp_connect(bool reconnect = false) {
 
 inline bool init_wifi()
 {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWD);
+  WiFi.begin(WiFi_SSID, WiFi_Passwd);
   bool wifi_ok = wifi_connect();
   WiFi.setSleep(false);
   return wifi_ok;
@@ -236,6 +319,14 @@ inline void config_cam()
 
 // ------------------------- Helper Functions -----------------------------
 
+static inline void write_u32(uint8_t *buf, size_t &off, uint32_t val)
+{
+  buf[off++] = (val >> 24) & 0xFF;
+  buf[off++] = (val >> 16) & 0xFF;
+  buf[off++] = (val >> 8)  & 0xFF;
+  buf[off++] = val & 0xFF;
+}
+
 // Write a uint16 big-endian into buf at offset, advance offset
 static inline void write_u16(uint8_t *buf, size_t &off, uint16_t val)
 {
@@ -251,20 +342,26 @@ static inline void write_u8(uint8_t *buf, size_t &off, uint8_t val)
 
 static inline bool send_frame(camera_fb_t *fb)
 {
-  if (!Tcp.connected()) return false;
+  // Connection lost before sending started, abort this connection
+  if (!Tcp.connected()) {
+    Sender_FrameId++;
+    return false;
+  }
 
   uint8_t Tcp_Hdr[TCP_IMGFRAME_HDR_SIZE];
 
   // Build header
   size_t off = 0;
-  write_u16(Tcp_Hdr, off, Sender_FrameId);              // 2B
-  write_u16(Tcp_Hdr, off, (uint32_t) fb->len);    // 4B
+  write_u16(Tcp_Hdr, off, Sender_FrameId);        // 2B
+  write_u32(Tcp_Hdr, off, (uint32_t) fb->len);    // 4B
   write_u16(Tcp_Hdr, off, (uint16_t) fb->width);  // 2B
   write_u16(Tcp_Hdr, off, (uint16_t) fb->height); // 2B
   write_u8 (Tcp_Hdr, off, (uint8_t)  fb->format); // 1B
 
   // Send header
-  if (Tcp.write(Tcp_Hdr, TCP_IMGFRAME_HDR_SIZE) != TCP_IMGFRAME_HDR_SIZE) {
+  size_t sent_size = Tcp.write(Tcp_Hdr, TCP_IMGFRAME_HDR_SIZE);
+  if (sent_size < TCP_IMGFRAME_HDR_SIZE) {
+    // Header write failed (full or partial), abort this connection
     Sender_FrameId++;
     return false;
   }
@@ -275,13 +372,17 @@ static inline bool send_frame(camera_fb_t *fb)
 
   while (remaining > 0) {
     size_t write_size = min(remaining, (size_t) TCP_MAX_CHUNK_SIZE);
-    size_t sent  = Tcp.write(ptr, write_size);
-    if (sent == 0) {
+    size_t sent_size = Tcp.write(ptr, write_size);
+    
+    if (sent_size == 0) {
+      // Data write fully failed, abort this connection
       Sender_FrameId++;
       return false;
     }
-    ptr       += sent;
-    remaining -= sent;
+
+    // Data write partially failed or fully succeeded, so continue from next byte
+    ptr       += sent_size;
+    remaining -= sent_size;
   }
 
   Sender_FrameId++;
@@ -316,8 +417,9 @@ void setup()
 {
   init_board();
   init_serial();
-  bool wifi_ok = init_wifi();
-  bool tcp_ok  = init_tcp(wifi_ok);
+  bool not_dummy = init_userinput();
+  bool wifi_ok = not_dummy && init_wifi();
+  bool tcp_ok  = not_dummy && init_tcp(wifi_ok);
   if (wifi_ok && tcp_ok) {
     enable_camera = true;
     // configure camera
@@ -335,7 +437,7 @@ void loop()
   if (enable_camera) {
     esp_wifi_set_ps(WIFI_PS_NONE);
     enable_camera = capture_n_upload();
-    delay(CAPTURE_N_UPLOAD_DELAY_MS);
+    delay(1);
   } else {
     Serial.printf("Seconds Elapsed Counter = %d\n", ++dummy_counter);
     delay(1000);

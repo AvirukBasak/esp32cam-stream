@@ -18,12 +18,10 @@
 - Use ESP32 v3.2.0
 
 ## Streaming
-
-### Over HTTP
-Easy API, slow speed (1 frame / 2 seconds) with uncompressed image data. Compression requires CPU.
-
-### Over raw UDP
-Requires some work, but achieves surprisingly higher FPS. However, frame tear visible on motion (similar to rolling shutter effect).
+- Over HTTP (code removed, see older commits): Easiest API, high latency.
+- Over TCP: Requires some work, needs chunk tracking, high latency as well.
+- Over UDP: Requires a lot of work, achieves lowest latencies.
+- In cases of TCP and UDP, frame tear is visible, UDP is more affected.
 
 ## ToDo
-- Compression of raw image data
+- Compression of raw image data (requires CPU time, not worth it)

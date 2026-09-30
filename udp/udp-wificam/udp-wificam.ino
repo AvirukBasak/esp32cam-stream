@@ -19,6 +19,8 @@
 
 // ------------------------- Customizable Configurations -----------------------------
 
+#define SERIAL_BAUD_RATE               (115200)
+
 #define WIFI_CONNECT_TIMEOUT_MS        (10000)
 
 #define DELAY_CAPTURE_FRAME_MS         (5)
@@ -83,8 +85,8 @@ inline void init_board()
 
 inline void init_serial()
 {
-  Serial.begin(115200);
-  Serial.println("[I] ESP32-CAM Image Capture and Upload");
+  Serial.begin(SERIAL_BAUD_RATE);
+  Serial.printf("[I] ESP32-CAM Image Capture and Upload (baud %d)\n", SERIAL_BAUD_RATE);
 }
 
 inline bool init_userinput() {
