@@ -100,10 +100,16 @@ inline bool init_userinput() {
         return val;
     };
 
-    String dummy = prompt("Activate dummy mode? (y/N): ");
-    if (dummy == "Y" || dummy == "y") {
-      return false;
-    }
+    String enable_camera;
+    do {
+      enable_camera = prompt("Enable camera? (y/n): ");
+      if (enable_camera == "N" || enable_camera == "n") {
+        return false;
+      }
+      if (enable_camera == "Y" || enable_camera == "y") {
+        break;
+      }
+    } while (true);
 
     auto take_input = [&]() {
         WiFi_SSID   = prompt("WiFi SSID:     ");
@@ -134,18 +140,23 @@ inline bool init_userinput() {
         return true;
     }
 
-    String choice = prompt("Load from preferences? (Y/n): ");
-    if (choice.length() == 0 || choice == "Y" || choice == "y") {
-        prefs.begin("config", true);
-        WiFi_SSID   = prefs.getString("ssid",      "");
-        WiFi_Passwd = prefs.getString("passwd",    "");
-        Host_IP     = prefs.getString("host_ip",   "");
-        Host_Port   = prefs.getInt   ("host_port",  0);
-        prefs.end();
-        Serial.println("[I] Loaded config from preferences");
-    } else {
-        take_input();
-    }
+    String choice;
+    do {
+      choice = prompt("Load from preferences? (y/n): ");
+      if (choice == "Y" || choice == "y") {
+          prefs.begin("config", true);
+          WiFi_SSID   = prefs.getString("ssid",      "");
+          WiFi_Passwd = prefs.getString("passwd",    "");
+          Host_IP     = prefs.getString("host_ip",   "");
+          Host_Port   = prefs.getInt   ("host_port",  0);
+          prefs.end();
+          Serial.println("[I] Loaded config from preferences");
+          break;
+      } else if (choice == "N" || choice == "n") {
+          take_input();
+          break;
+      }
+    } while (true);
 
     return true;
 }
