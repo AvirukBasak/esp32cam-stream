@@ -43,7 +43,7 @@ static int Host_Port = 8080;
 
 // [frame_id:2B][img_len:4B][img_w:2B][img_h:2B][pixfmt:1B]
 #define TCP_IMGFRAME_HDR_SIZE  (11)
-#define TCP_MAX_CHUNK_SIZE     (1500)
+#define TCP_MAX_CHUNK_SIZE     (1400)
 #define TCP_CONNECT_TIMEOUT_MS (10000)
 
 #define START_FRAME_NO         ((0xFFFF) - 50)
@@ -396,12 +396,14 @@ inline bool capture_n_upload()
   if (!wifi_connect(true)) return false;
   if (!tcp_connect(true))  return false;
 
+  if (DELAY_CAPTURE_FRAME_MS) delay(DELAY_CAPTURE_FRAME_MS);
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("[E] Camera capture failed");
     return true;
   }
 
+  if (DELAY_SEND_FRAME_MS) delay(DELAY_SEND_FRAME_MS);
   bool frame_ok = send_frame(fb);
   esp_camera_fb_return(fb);
 
